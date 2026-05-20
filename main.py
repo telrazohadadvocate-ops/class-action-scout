@@ -298,6 +298,57 @@ class ClassActionScout:
                 logger.info(f"    Action: {lead.recommended_action}")
                 logger.info("")
 
+    # ── Re-analyze pending leads ────────────────────────
+
+    def reanalyze_pending(self) -> dict:
+        """
+        Re-run Stage 2 deep analysis on leads that have a relevance score
+        but are missing strength_score or priority (i.e. Stage 2 never ran
+        or was interrupted).  Called by POST /api/reanalyze.
+        """
+        pending = (
+            self.db.query(Lead)
+            .filter(
+                Lead.relevance_score.isnot(None),
+                (Lead.strength_score.is_(None) | Lead.priority.is_(None)),
+            )
+            .all()
+        )
+        logger.info(f"Re-analyzing {len(pending)} pending leads...")
+        done = 0
+        for lead in pending:
+            try:
+                # Reconstruct the Stage-1 classification dict from stored columns
+                classification = {
+                    "relevance_score": lead.relevance_score,
+                    "company": lead.company or "",
+                    "sector": lead.sector or "",
+                    "operates_in_israel": lead.operates_in_israel,
+                    "israeli_law_basis": lead.israeli_law_basis or "",
+                    "estimated_class_size": lead.estimated_class_size or "",
+                }
+                analysis = self.analyzer.analyze(
+                    title=lead.title,
+                    content=lead.raw_content or "",
+                    classification=classification,
+                )
+                lead.strength_score = analysis.get("strength_score", 0)
+                lead.priority = analysis.get("priority", "low")
+                lead.legal_analysis = analysis.get("legal_analysis", "")
+                lead.recommended_action = analysis.get("recommended_action", "")
+                lead.comparable_cases = json.dumps(
+                    analysis.get("comparable_cases", []), ensure_ascii=False
+                )
+                lead.is_duplicate_of_known = self._check_known_cases(lead)
+                lead.matches_expertise = self._check_expertise(lead)
+                done += 1
+                logger.info(f"  [{done}/{len(pending)}] {lead.title[:60]}")
+            except Exception as e:
+                logger.warning(f"  reanalyze error for lead {lead.id}: {e}")
+
+        self.db.commit()
+        return {"reanalyzed": done, "total": len(pending)}
+
     # ── On-demand PACER enrichment ─────────────────────
 
     def run_pacer_enrichment(self, min_strength: float = 5.0) -> dict:

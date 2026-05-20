@@ -120,6 +120,23 @@ def trigger_run():
     threading.Thread(target=run, daemon=True).start()
     return jsonify({"status": "started"})
 
+@app.route("/api/reanalyze", methods=["POST"])
+def trigger_reanalyze():
+    db = get_db()
+    pending_count = db.query(Lead).filter(
+        Lead.relevance_score.isnot(None),
+        (Lead.strength_score.is_(None) | Lead.priority.is_(None)),
+    ).count()
+    def run():
+        try:
+            from main import ClassActionScout
+            result = ClassActionScout().reanalyze_pending()
+            print(f"Reanalyze complete: {result}")
+        except Exception as e:
+            print(f"Reanalyze error: {e}")
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify({"status": "started", "pending_count": pending_count})
+
 @app.route("/api/run-pacer", methods=["POST"])
 def trigger_pacer():
     db = get_db()

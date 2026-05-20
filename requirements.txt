@@ -10,3 +10,4 @@ flask-cors>=4.0.0
 playwright>=1.40.0
 msal>=1.28
 gunicorn>=21.0
+pillow>=10.0

@@ -47,6 +47,10 @@ def _lead_to_dict(lead):
 def dashboard():
     return send_from_directory("templates", "dashboard.html")
 
+@app.route("/static/<path:filename>")
+def static_files(filename):
+    return send_from_directory("static", filename)
+
 @app.route("/api/leads")
 def get_leads():
     db = get_db()

@@ -1,0 +1,12 @@
+# Class Action Scout — Dependencies
+anthropic>=0.40.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+sqlalchemy>=2.0.0
+schedule>=1.2.0
+lxml>=5.0.0
+flask>=3.0.0
+flask-cors>=4.0.0
+playwright>=1.40.0
+msal>=1.28
+gunicorn>=21.0

@@ -1,0 +1,25 @@
+# Data, credentials, and generated files — never commit
+data/
+venv/
+.env
+__pycache__/
+*.pyc
+*.pyo
+logs/
+reports/
+scout.log
+
+# Test scripts with sensitive case numbers / live browser sessions
+test_pacer.py
+test_pacer_pipeline.py
+reprocess_pacer.py
+
+# IDE / OS / editor tooling
+.idea/
+.vscode/
+.claude/
+*.DS_Store
+Thumbs.db
+
+# Ad-hoc output files
+output.txt

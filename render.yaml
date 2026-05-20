@@ -1,0 +1,85 @@
+services:
+  # ── Web dashboard ──────────────────────────────────────────
+  - type: web
+    name: scout-web
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard
+    disk:
+      name: scout-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: CLAUDE_MODEL
+        value: claude-sonnet-4-6
+      - key: PACER_USERNAME
+        sync: false
+      - key: PACER_PASSWORD
+        sync: false
+      - key: OUTLOOK_CLIENT_ID
+        sync: false
+      - key: OUTLOOK_TENANT_ID
+        sync: false
+      - key: OUTLOOK_USER_EMAIL
+        value: Ohad@levin-telraz.co.il
+      - key: GMAIL_ADDRESS
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: REPORT_RECIPIENTS
+        sync: false
+      - key: PYTHONIOENCODING
+        value: utf-8
+
+  # ── Daily pipeline cron — 06:00 IST (= 03:00 UTC) ─────────
+  - type: cron
+    name: scout-daily
+    env: docker
+    dockerfilePath: ./Dockerfile
+    schedule: "0 3 * * *"
+    dockerCommand: "python -X utf8 main.py --run-now --skip-pinkas"
+    disk:
+      name: scout-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: CLAUDE_MODEL
+        value: claude-sonnet-4-6
+      - key: PACER_USERNAME
+        sync: false
+      - key: PACER_PASSWORD
+        sync: false
+      - key: OUTLOOK_CLIENT_ID
+        sync: false
+      - key: OUTLOOK_TENANT_ID
+        sync: false
+      - key: OUTLOOK_USER_EMAIL
+        value: Ohad@levin-telraz.co.il
+      - key: GMAIL_ADDRESS
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: REPORT_RECIPIENTS
+        sync: false
+      - key: PYTHONIOENCODING
+        value: utf-8

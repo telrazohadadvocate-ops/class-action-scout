@@ -30,6 +30,14 @@ CRITICAL EVALUATION CRITERIA:
 3. Consider whether Israeli consumers were EXCLUDED from a US settlement.
    If excluded — this creates an opportunity. If included — no need to file separately.
 
+4. US case dismissal signals:
+   - VOLUNTARY DISMISSAL by plaintiff = NEGATIVE signal. The plaintiff gave up; this suggests the case
+     was weak, the claims were flawed, or a private deal was reached. Do NOT treat as an opportunity.
+   - DISMISSED WITH PREJUDICE = case dead on the merits. Do NOT pursue.
+   - DISMISSED WITHOUT PREJUDICE = can be refiled; neutral, warrants review.
+   - SETTLEMENT = check whether Israeli consumers are included or excluded (see point 3 above).
+   - ACTIVE litigation = most useful signal; US case validates the legal theory.
+
 Respond ONLY with a JSON object (no markdown, no explanation):
 {{
   "relevance_score": <1-10, where 10 = extremely relevant to Israeli class action>,

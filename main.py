@@ -235,10 +235,16 @@ class ClassActionScout:
                                                 f"Dismissal: {details.dismissal_type}\n"
                                                 f"Docket entries: {len(details.docket_entries)}"
                                             )
-                                            if details.dismissal_type in ("voluntary", "without_prejudice"):
-                                                note += "\n⚡ VOLUNTARY DISMISSAL — case alive for IL filing"
+                                            if details.dismissal_type == "voluntary":
+                                                note += "\n⚠ VOLUNTARY DISMISSAL — plaintiff withdrew, weak case signal"
+                                            elif details.dismissal_type == "with_prejudice":
+                                                note += "\n❌ DISMISSED WITH PREJUDICE — case dead on merits"
+                                            elif details.dismissal_type == "without_prejudice":
+                                                note += "\n🔍 DISMISSED WITHOUT PREJUDICE — can be refiled, needs review"
                                             elif details.dismissal_type == "settled":
-                                                note += "\n⚠ SETTLEMENT — check if IL consumers included/excluded"
+                                                note += "\n⚠ SETTLEMENT — check if Israeli consumers included or excluded"
+                                            else:
+                                                note += "\n✅ CASE ACTIVE — litigation ongoing in US"
                                             lead.notes = (
                                                 (lead.notes + "\n\n" if lead.notes else "") + note
                                             )
@@ -396,10 +402,16 @@ class ClassActionScout:
                         f"Dismissal: {details.dismissal_type}\n"
                         f"Docket entries: {len(details.docket_entries)}"
                     )
-                    if details.dismissal_type in ("voluntary", "without_prejudice"):
-                        note += "\n⚡ VOLUNTARY DISMISSAL — case alive for IL filing"
+                    if details.dismissal_type == "voluntary":
+                        note += "\n⚠ VOLUNTARY DISMISSAL — plaintiff withdrew, weak case signal"
+                    elif details.dismissal_type == "with_prejudice":
+                        note += "\n❌ DISMISSED WITH PREJUDICE — case dead on merits"
+                    elif details.dismissal_type == "without_prejudice":
+                        note += "\n🔍 DISMISSED WITHOUT PREJUDICE — can be refiled, needs review"
                     elif details.dismissal_type == "settled":
-                        note += "\n⚠ SETTLEMENT — check if IL consumers included/excluded"
+                        note += "\n⚠ SETTLEMENT — check if Israeli consumers included or excluded"
+                    else:
+                        note += "\n✅ CASE ACTIVE — litigation ongoing in US"
                     lead.notes = (lead.notes + "\n\n" if lead.notes else "") + note
                     enriched += 1
                     logger.info(f"PACER enriched: {lead.company} → {details.case_number}")

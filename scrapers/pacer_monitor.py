@@ -342,6 +342,17 @@ class PacerMonitorClient:
         return entries
 
     def _detect_dismissal(self, case: PacerCase) -> str:
+        """
+        Detect the US case outcome and return one of:
+
+          "none"              — case still active; US litigation ongoing
+          "voluntary"         — plaintiff voluntarily withdrew; WEAK signal, do NOT pursue
+          "with_prejudice"    — dismissed on the merits; case is dead, do NOT pursue
+          "without_prejudice" — dismissed but can be refiled; neutral, needs review
+          "settled"           — check whether Israeli consumers were included or excluded
+                                Excluded → opportunity to file in Israel
+                                Included → no separate IL filing needed
+        """
         dismissal_keywords = {
             "voluntary": ["voluntary dismissal", "voluntarily dismissed", "notice of voluntary"],
             "without_prejudice": ["without prejudice", "dismissed without prejudice"],

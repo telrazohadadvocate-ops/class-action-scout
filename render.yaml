@@ -44,21 +44,20 @@ services:
         value: utf-8
 
   # ── Daily pipeline cron — 06:00 IST (= 03:00 UTC) ─────────
-  # Runs as a lightweight alpine container; no disk needed because
-  # it triggers the web service via HTTP and the web service owns the disk.
+  # Uses the official curlimages/curl image — no disk needed.
+  # Triggers the web service pipeline via authenticated HTTP.
   - type: cron
     name: scout-daily
-    env: native
-    runtime: native
+    runtime: image
+    image:
+      url: docker.io/curlimages/curl:latest
     schedule: "0 3 * * *"
-    buildCommand: "echo ready"
-    startCommand: >-
-      curl -fs -X POST "$SCOUT_WEB_URL/api/run"
-      -H "Content-Type: application/json"
-      -H "X-Cron-Secret: $CRON_SECRET"
-      -d '{"skip_pinkas": true}'
+    dockerCommand: 'sh -c "curl -fs -X POST $SCOUT_WEB_URL/api/run -H ''Content-Type: application/json'' -H ''X-Cron-Secret: $CRON_SECRET'' -d ''{\"skip_pinkas\":true}'' || echo FAILED"'
     envVars:
       - key: SCOUT_WEB_URL
-        sync: false
+        fromService:
+          name: scout-web
+          type: web
+          property: hostport
       - key: CRON_SECRET
         sync: false

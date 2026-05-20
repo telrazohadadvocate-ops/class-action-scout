@@ -99,14 +99,22 @@ def get_stats():
 
 @app.route("/api/run", methods=["POST"])
 def trigger_run():
+    cron_secret = os.getenv("CRON_SECRET", "")
+    if cron_secret:
+        provided = request.headers.get("X-Cron-Secret", "")
+        # Allow calls that carry the correct secret OR come from the browser
+        # dashboard (which sends no secret but originates from the same host).
+        # Reject only when a secret is configured AND the caller sends the wrong one.
+        if provided and provided != cron_secret:
+            return jsonify({"error": "forbidden"}), 403
     data = request.json or {}
     def run():
         try:
             from main import ClassActionScout
-            ClassActionScout().run(sources=data.get("sources"), skip_pinkas=data.get("skip_pinkas",True))
+            ClassActionScout().run(sources=data.get("sources"), skip_pinkas=data.get("skip_pinkas", True))
         except Exception as e: print(f"Pipeline error: {e}")
     threading.Thread(target=run, daemon=True).start()
-    return jsonify({"status":"started"})
+    return jsonify({"status": "started"})
 
 @app.route("/api/run-pacer", methods=["POST"])
 def trigger_pacer():

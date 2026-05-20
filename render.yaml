@@ -38,48 +38,27 @@ services:
         sync: false
       - key: REPORT_RECIPIENTS
         sync: false
+      - key: CRON_SECRET
+        sync: false
       - key: PYTHONIOENCODING
         value: utf-8
 
   # ── Daily pipeline cron — 06:00 IST (= 03:00 UTC) ─────────
+  # Runs as a lightweight alpine container; no disk needed because
+  # it triggers the web service via HTTP and the web service owns the disk.
   - type: cron
     name: scout-daily
-    env: docker
-    dockerfilePath: ./Dockerfile
+    env: native
+    runtime: native
     schedule: "0 3 * * *"
-    dockerCommand: "python -X utf8 main.py --run-now --skip-pinkas"
-    disk:
-      name: scout-data
-      mountPath: /var/data
-      sizeGB: 1
+    buildCommand: "echo ready"
+    startCommand: >-
+      curl -fs -X POST "$SCOUT_WEB_URL/api/run"
+      -H "Content-Type: application/json"
+      -H "X-Cron-Secret: $CRON_SECRET"
+      -d '{"skip_pinkas": true}'
     envVars:
-      - key: ANTHROPIC_API_KEY
+      - key: SCOUT_WEB_URL
         sync: false
-      - key: CLAUDE_MODEL
-        value: claude-sonnet-4-6
-      - key: PACER_USERNAME
+      - key: CRON_SECRET
         sync: false
-      - key: PACER_PASSWORD
-        sync: false
-      - key: OUTLOOK_CLIENT_ID
-        sync: false
-      - key: OUTLOOK_TENANT_ID
-        sync: false
-      - key: OUTLOOK_USER_EMAIL
-        value: Ohad@levin-telraz.co.il
-      - key: GMAIL_ADDRESS
-        sync: false
-      - key: GMAIL_APP_PASSWORD
-        sync: false
-      - key: SMTP_HOST
-        sync: false
-      - key: SMTP_PORT
-        value: "587"
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASS
-        sync: false
-      - key: REPORT_RECIPIENTS
-        sync: false
-      - key: PYTHONIOENCODING
-        value: utf-8

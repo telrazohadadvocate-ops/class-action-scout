@@ -22,6 +22,6 @@ COPY . .
 # the image needs the path so code that references it doesn't fail locally)
 RUN mkdir -p /var/data
 
-EXPOSE 5000
+EXPOSE 10000
 
-CMD ["sh", "-c", "gunicorn -w 2 -b 0.0.0.0:${PORT:-5000} app:app"]
+CMD gunicorn -w 2 -b 0.0.0.0:$PORT app:app

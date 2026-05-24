@@ -44,20 +44,14 @@ services:
         value: utf-8
 
   # ── Daily pipeline cron — 06:00 IST (= 03:00 UTC) ─────────
-  # Uses the official curlimages/curl image — no disk needed.
-  # Triggers the web service pipeline via authenticated HTTP.
+  # Uses alpine (has sh built-in) to install curl and trigger the web service.
   - type: cron
     name: scout-daily
     runtime: image
     image:
-      url: docker.io/curlimages/curl:latest
+      url: docker.io/alpine:latest
     schedule: "0 3 * * *"
-    dockerCommand: 'sh -c "curl -fs -X POST $SCOUT_WEB_URL/api/run -H ''Content-Type: application/json'' -H ''X-Cron-Secret: $CRON_SECRET'' -d ''{\"skip_pinkas\":true}'' || echo FAILED"'
+    dockerCommand: "sh -c 'apk add --no-cache curl > /dev/null 2>&1 && curl -fsS -X POST https://scout-web-0l5o.onrender.com/api/run -H \"Content-Type: application/json\" -H \"X-Cron-Secret: $CRON_SECRET\" -d \"{\\\"skip_pinkas\\\":true}\" || echo CRON_FAILED'"
     envVars:
-      - key: SCOUT_WEB_URL
-        fromService:
-          name: scout-web
-          type: web
-          property: hostport
       - key: CRON_SECRET
         sync: false

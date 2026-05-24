@@ -1,5 +1,4 @@
 services:
-  # ── Web dashboard ──────────────────────────────────────────
   - type: web
     name: scout-web
     env: docker
@@ -23,35 +22,8 @@ services:
       - key: OUTLOOK_TENANT_ID
         sync: false
       - key: OUTLOOK_USER_EMAIL
-        value: Ohad@levin-telraz.co.il
-      - key: GMAIL_ADDRESS
         sync: false
-      - key: GMAIL_APP_PASSWORD
-        sync: false
-      - key: SMTP_HOST
-        sync: false
-      - key: SMTP_PORT
-        value: "587"
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASS
-        sync: false
-      - key: REPORT_RECIPIENTS
-        sync: false
-      - key: CRON_SECRET
-        sync: false
-      - key: PYTHONIOENCODING
-        value: utf-8
-
-  # ── Daily pipeline cron — 06:00 IST (= 03:00 UTC) ─────────
-  - type: cron
-    name: scout-daily
-    runtime: image
-    image:
-      url: curlimages/curl:latest
-    schedule: "0 3 * * *"
-    buildCommand: ""
-    startCommand: "curl -fsS -X POST https://scout-web-0l5o.onrender.com/api/run -H 'Content-Type: application/json' -H 'X-Cron-Secret: $CRON_SECRET' -d '{\"skip_pinkas\":true}'"
-    envVars:
+      - key: RENDER
+        value: "true"
       - key: CRON_SECRET
         sync: false

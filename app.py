@@ -106,12 +106,9 @@ def trigger_run():
     cron_secret = os.getenv("CRON_SECRET", "")
     if cron_secret:
         provided = request.headers.get("X-Cron-Secret", "")
-        # Allow calls that carry the correct secret OR come from the browser
-        # dashboard (which sends no secret but originates from the same host).
-        # Reject only when a secret is configured AND the caller sends the wrong one.
-        if provided and provided != cron_secret:
-            return jsonify({"error": "forbidden"}), 403
-    data = request.json or {}
+        if provided != cron_secret:
+            return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
     def run():
         try:
             from main import ClassActionScout
@@ -122,6 +119,7 @@ def trigger_run():
 
 @app.route("/api/reanalyze", methods=["POST"])
 def trigger_reanalyze():
+    data = request.get_json(silent=True) or {}  # noqa: F841
     db = get_db()
     pending_count = db.query(Lead).filter(
         Lead.relevance_score.isnot(None),
@@ -139,6 +137,7 @@ def trigger_reanalyze():
 
 @app.route("/api/run-pacer", methods=["POST"])
 def trigger_pacer():
+    data = request.get_json(silent=True) or {}  # noqa: F841
     db = get_db()
     lead_count = db.query(Lead).filter(Lead.strength_score >= 5).count()
     def run():

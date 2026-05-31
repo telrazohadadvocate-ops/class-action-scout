@@ -112,6 +112,16 @@ class PinkasCache(Base):
     searched_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class AlertLog(Base):
+    """Record of high-priority alert emails sent"""
+    __tablename__ = "alert_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sent_at = Column(DateTime, default=lambda: datetime.utcnow())
+    lead_count = Column(Integer, default=0)
+    status = Column(String(50))  # "sent", "error"
+
+
 # ── DB initialization ──────────────────────────────────
 
 def init_database(database_url: str):

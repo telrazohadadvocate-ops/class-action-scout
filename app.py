@@ -225,6 +225,26 @@ def known_cases():
     from config.settings import KNOWN_CASES
     return jsonify(KNOWN_CASES)
 
+@app.route("/api/test-email")
+def test_email():
+    cron_secret = os.getenv("CRON_SECRET", "")
+    provided = request.headers.get("X-Cron-Secret", "")
+    if not (cron_secret and provided == cron_secret):
+        return jsonify({"error": "unauthorized"}), 401
+    from alerts.email_sender import send_alert_email
+    dummy = [{
+        "id": 0,
+        "title": "בדיקת מערכת התראות — Class Action Scout",
+        "company": "Acme Corp (Test)",
+        "source_name": "test",
+        "recommended_action": "זוהי הודעת בדיקה לאימות תצורת ה-SMTP. אם קיבלת מייל זה, ההגדרות תקינות.",
+        "strength_score": 9,
+    }]
+    ok = send_alert_email(dummy)
+    if ok:
+        return jsonify({"status": "sent"})
+    return jsonify({"status": "error", "detail": "Check SMTP_USER / SMTP_PASSWORD / SMTP_HOST in env vars"}), 500
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=5000)

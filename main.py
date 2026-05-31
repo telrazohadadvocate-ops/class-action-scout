@@ -310,6 +310,9 @@ class ClassActionScout:
                 logger.info(f"    Action: {lead.recommended_action}")
                 logger.info("")
 
+        # 6. EMAIL ALERTS
+        self._send_run_alerts(run_start)
+
     # ── Re-analyze pending leads ────────────────────────
 
     def reanalyze_pending(self) -> dict:
@@ -566,6 +569,72 @@ a {{ color: #2c5282; }}
         return html
 
     # ── Internal helpers ───────────────────────────────
+
+    def _send_run_alerts(self, run_start) -> None:
+        """
+        After each pipeline run: find high-priority leads created in this run,
+        enforce a 24-hour send guard, then email a digest.
+        """
+        from alerts.email_sender import send_alert_email
+        from database.models import AlertLog
+
+        try:
+            # 24-hour guard — check AlertLog for a recent send
+            from datetime import timedelta
+            cutoff = datetime.utcnow() - timedelta(hours=24)
+            recent = (
+                self.db.query(AlertLog)
+                .filter(AlertLog.status == "sent", AlertLog.sent_at >= cutoff)
+                .first()
+            )
+            if recent:
+                logger.info(f"Alert already sent today ({recent.sent_at.strftime('%H:%M UTC')}) — skipping")
+                return
+
+            # Leads created in this run with high priority
+            # Strip timezone for SQLite naive-datetime comparison
+            run_start_naive = run_start.replace(tzinfo=None) if hasattr(run_start, "tzinfo") and run_start.tzinfo else run_start
+            new_high = (
+                self.db.query(Lead)
+                .filter(
+                    Lead.priority == "high",
+                    Lead.scraped_at >= run_start_naive,
+                    Lead.is_duplicate_of_known != True,
+                )
+                .all()
+            )
+
+            if not new_high:
+                logger.info("No new high-priority leads — no email sent")
+                return
+
+            lead_dicts = [
+                {
+                    "id": l.id,
+                    "title": l.title,
+                    "company": l.company or "",
+                    "source_name": l.source_name or "",
+                    "recommended_action": l.recommended_action or "",
+                    "strength_score": l.strength_score,
+                }
+                for l in new_high
+            ]
+
+            ok = send_alert_email(lead_dicts)
+            log_entry = AlertLog(
+                lead_count=len(new_high),
+                status="sent" if ok else "error",
+            )
+            self.db.add(log_entry)
+            self.db.commit()
+
+            if ok:
+                logger.info(f"Sent alert email with {len(new_high)} high-priority leads")
+            else:
+                logger.warning("Alert email failed — check SMTP settings")
+
+        except Exception as e:
+            logger.error(f"_send_run_alerts error: {e}")
 
     def _semantic_dedup(self, leads_for_deep: list) -> list:
         """

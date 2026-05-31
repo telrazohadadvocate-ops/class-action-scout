@@ -59,6 +59,10 @@ class Lead(Base):
     is_duplicate_of_known = Column(Boolean, default=False)
     known_case_ref = Column(String(255))
 
+    # Semantic deduplication
+    embedding = Column(Text)            # JSON-serialized list[float] from Voyage AI
+    dedup_group_id = Column(String(50)) # str(canonical_lead.id) for the cluster
+
     # Status tracking
     status = Column(String(50), default="new")  # new, reviewed, pursuing, dismissed
     notes = Column(Text)

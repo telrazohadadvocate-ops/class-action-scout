@@ -263,6 +263,7 @@ a{color:inherit;text-decoration:none}
 .tag-pin{background:var(--red-bg);color:var(--red);border:1px solid rgba(224,108,117,0.15)}
 .tag-pacer{background:var(--purple-bg);color:var(--purple);border:1px solid rgba(155,138,251,0.15)}
 .tag-new{background:var(--indigo-glow);color:var(--indigo);border:1px solid rgba(94,106,210,0.2)}
+.tag-src{background:var(--blue-bg);color:var(--blue);border:1px solid rgba(97,175,239,0.15)}
 
 /* ══ EXPAND DETAIL ══ */
 .lead-detail{
@@ -595,6 +596,10 @@ a{color:inherit;text-decoration:none}
           <option value="relevance">רלוונטיות</option>
           <option value="date">תאריך</option>
         </select>
+        <span style="display:flex;align-items:center;gap:6px;cursor:pointer;flex-shrink:0" onclick="document.getElementById('hideDupToggle').classList.toggle('on');loadLeads()">
+          <button class="toggle on" id="hideDupToggle" style="pointer-events:none"></button>
+          <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap">הסתר כפילויות</span>
+        </span>
         <div class="view-toggle">
           <button class="vt-btn active" id="vt-list" title="רשימה" onclick="setListMode('list')">
             <svg viewBox="0 0 14 14"><line x1="1" y1="3" x2="13" y2="3" stroke-width="1.5"/><line x1="1" y1="7" x2="13" y2="7" stroke-width="1.5"/><line x1="1" y1="11" x2="13" y2="11" stroke-width="1.5"/></svg>
@@ -830,6 +835,7 @@ async function loadLeads() {
     status: document.getElementById('fs').value,
     sort: document.getElementById('sort').value,
     search: document.getElementById('search').value,
+    hide_duplicates: document.getElementById('hideDupToggle').classList.contains('on'),
     limit: 100
   });
   try {
@@ -915,6 +921,7 @@ function buildLeadCard(l) {
   let tags = '';
   if (l.matchesExpertise) tags += `<span class="tag tag-ex">${(l.expertiseArea||'').split('/')[0].trim()||'מומחיות'}</span>`;
   if (l.isDuplicate) tags += '<span class="tag tag-dup">תיק קיים</span>';
+  if (!l.isDuplicate && l.duplicateCount > 1) tags += `<span class="tag tag-src">${l.duplicateCount} מקורות</span>`;
   if (l.pinkasExists) tags += '<span class="tag tag-pin">פנקס</span>';
   if ((l.notes||'').includes('PACER')) tags += '<span class="tag tag-pacer">PACER</span>';
   if (l.status === 'new') tags += '<span class="tag tag-new">חדש</span>';

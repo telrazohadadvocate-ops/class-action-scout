@@ -12,6 +12,7 @@ if sys.platform == "win32":
 
 from flask import Flask, jsonify, request, send_from_directory, session, redirect, url_for, render_template
 from flask_cors import CORS
+from sqlalchemy import func
 from config.settings import DATABASE_URL, DATABASE_PATH, DASHBOARD_PASSWORD, FLASK_SECRET_KEY
 from database.models import init_database, get_session, Lead, ScrapeLog
 
@@ -35,7 +36,7 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated
 
-def _lead_to_dict(lead):
+def _lead_to_dict(lead, duplicate_count=1):
     return {
         "id": lead.id, "title": lead.title, "company": lead.company or "",
         "sector": lead.sector or "", "source": lead.source_name,
@@ -51,6 +52,8 @@ def _lead_to_dict(lead):
         "isDuplicate": lead.is_duplicate_of_known or False,
         "knownCaseRef": lead.known_case_ref or "",
         "pinkasExists": lead.pinkas_exists or False,
+        "dedupGroupId": lead.dedup_group_id or "",
+        "duplicateCount": duplicate_count,
         "status": lead.status or "new", "notes": lead.notes or "",
         "scrapedAt": lead.scraped_at.isoformat() if lead.scraped_at else "",
         "reviewedAt": lead.reviewed_at.isoformat() if lead.reviewed_at else "",
@@ -93,6 +96,8 @@ def static_files(filename):
 def get_leads():
     db = get_db()
     q = db.query(Lead)
+    if request.args.get("hide_duplicates", "true").lower() == "true":
+        q = q.filter((Lead.is_duplicate_of_known == False) | Lead.is_duplicate_of_known.is_(None))
     p = request.args.get("priority")
     if p and p != "all": q = q.filter(Lead.priority == p)
     s = request.args.get("status")
@@ -107,14 +112,23 @@ def get_leads():
     elif sort == "date": q = q.order_by(Lead.scraped_at.desc())
     total = q.count()
     leads = q.offset(request.args.get("offset",0,type=int)).limit(request.args.get("limit",100,type=int)).all()
-    return jsonify({"total": total, "leads": [_lead_to_dict(l) for l in leads]})
+    group_counts = dict(
+        db.query(Lead.dedup_group_id, func.count(Lead.id))
+        .filter(Lead.dedup_group_id.isnot(None))
+        .group_by(Lead.dedup_group_id)
+        .all()
+    ) if leads else {}
+    return jsonify({"total": total, "leads": [_lead_to_dict(l, group_counts.get(l.dedup_group_id, 1)) for l in leads]})
 
 @app.route("/api/leads/<int:lid>")
 @login_required
 def get_lead(lid):
     db = get_db()
     lead = db.query(Lead).get(lid)
-    return jsonify(_lead_to_dict(lead)) if lead else (jsonify({"error":"not found"}),404)
+    if not lead:
+        return jsonify({"error": "not found"}), 404
+    cnt = db.query(func.count(Lead.id)).filter(Lead.dedup_group_id == lead.dedup_group_id).scalar() if lead.dedup_group_id else 1
+    return jsonify(_lead_to_dict(lead, cnt))
 
 @app.route("/api/leads/<int:lid>/status", methods=["PUT"])
 @login_required
@@ -126,7 +140,8 @@ def update_status(lid):
     if "status" in data: lead.status = data["status"]; lead.reviewed_at = datetime.now(timezone.utc)
     if "notes" in data: lead.notes = data["notes"]
     db.commit()
-    return jsonify(_lead_to_dict(lead))
+    cnt = db.query(func.count(Lead.id)).filter(Lead.dedup_group_id == lead.dedup_group_id).scalar() if lead.dedup_group_id else 1
+    return jsonify(_lead_to_dict(lead, cnt))
 
 @app.route("/api/stats")
 @login_required
@@ -139,6 +154,7 @@ def get_stats():
         "medium": db.query(Lead).filter(Lead.priority=="medium").count(),
         "new": db.query(Lead).filter(Lead.status=="new").count(),
         "pursuing": db.query(Lead).filter(Lead.status=="pursuing").count(),
+        "duplicates_merged": db.query(Lead).filter(Lead.is_duplicate_of_known==True).count(),
         "last_run": last.completed_at.isoformat() if last and last.completed_at else None,
     })
 

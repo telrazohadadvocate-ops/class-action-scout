@@ -11,3 +11,4 @@ playwright>=1.40.0
 msal>=1.28
 gunicorn>=21.0
 pillow>=10.0
+voyageai>=0.3.0

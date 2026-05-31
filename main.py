@@ -35,10 +35,12 @@ from config.settings import (
     ANTHROPIC_API_KEY, CLAUDE_MODEL, DATABASE_URL, DATABASE_PATH,
     MIN_RELEVANCE_SCORE, HIGH_PRIORITY_THRESHOLD,
     SCRAPE_DELAY_SECONDS, SOURCES, FIRM_EXPERTISE, KNOWN_CASES,
+    VOYAGE_API_KEY, DEDUP_THRESHOLD,
 )
 from database.models import init_database, get_session, Lead, RawSource, ScrapeLog
 from scrapers.scrapers import build_scrapers
 from analysis.claude_analyzer import ClaudeAnalyzer
+from analysis.dedup import SemanticDeduplicator
 from registry.pinkas_checker import PinkasChecker
 
 
@@ -58,6 +60,7 @@ class ClassActionScout:
 
         self.pinkas = PinkasChecker()
         self.scrapers = build_scrapers(SOURCES, SCRAPE_DELAY_SECONDS)
+        self.deduplicator = SemanticDeduplicator(api_key=VOYAGE_API_KEY, threshold=DEDUP_THRESHOLD)
         logger.info(f"Ready. Scrapers: {list(self.scrapers.keys())}")
 
     # ── Full pipeline ──────────────────────────────────
@@ -167,10 +170,13 @@ class ClassActionScout:
         self.db.commit()
         logger.info(f"Leads for deep analysis: {len(leads_for_deep)}")
 
+        # 2.5. SEMANTIC DEDUP
+        leads_for_analysis = self._semantic_dedup(leads_for_deep)
+
         # 3. STAGE 2 — DEEP ANALYSIS
-        if leads_for_deep:
+        if leads_for_analysis:
             logger.info("Stage 2: Deep legal analysis...")
-            for lead, item, classification in leads_for_deep:
+            for lead, item, classification in leads_for_analysis:
                 analysis = self.analyzer.analyze(
                     title=item.title,
                     content=item.content,
@@ -197,13 +203,13 @@ class ClassActionScout:
             self.db.commit()
 
         # 3.5. STAGE 3.5 — PACER ENRICHMENT
-        if leads_for_deep:
+        if leads_for_analysis:
             logger.info("Stage 3.5: PACER Enrichment...")
             try:
                 from scrapers.pacer_monitor import PacerMonitorClient
                 pacer = PacerMonitorClient()
                 if pacer.login():
-                    for lead, _, _ in leads_for_deep:
+                    for lead, _, _ in leads_for_analysis:
                         if lead.strength_score and lead.strength_score >= 5 and lead.company:
                             logger.info(f"  PACER lookup: {lead.company}")
                             try:
@@ -269,9 +275,9 @@ class ClassActionScout:
             self.db.commit()
 
         # 4. STAGE 4 — PINKAS CHECK
-        if not skip_pinkas and leads_for_deep:
+        if not skip_pinkas and leads_for_analysis:
             logger.info("Stage 4: פנקס check...")
-            for lead, _, _ in leads_for_deep:
+            for lead, _, _ in leads_for_analysis:
                 if lead.company:
                     result = self.pinkas.check(lead.company)
                     lead.pinkas_checked = True
@@ -285,12 +291,12 @@ class ClassActionScout:
 
         # 5. SUMMARY
         elapsed = (datetime.now(timezone.utc) - run_start).total_seconds()
-        high_priority = [l for l, _, _ in leads_for_deep if l.priority == "high"]
+        high_priority = [l for l, _, _ in leads_for_analysis if l.priority == "high"]
 
         logger.info(f"\n{'='*60}")
         logger.info(f"PIPELINE COMPLETE — {elapsed:.0f}s")
         logger.info(f"  Scraped: {len(all_items)} new items")
-        logger.info(f"  Analyzed: {len(leads_for_deep)} leads")
+        logger.info(f"  Analyzed: {len(leads_for_analysis)} leads (after dedup)")
         logger.info(f"  High priority: {len(high_priority)}")
         logger.info(f"{'='*60}\n")
 
@@ -560,6 +566,59 @@ a {{ color: #2c5282; }}
         return html
 
     # ── Internal helpers ───────────────────────────────
+
+    def _semantic_dedup(self, leads_for_deep: list) -> list:
+        """
+        Compare each new lead against existing DB leads with stored embeddings
+        and against already-processed leads in this batch.  Returns only the
+        unique (non-duplicate) leads for deep analysis.
+        """
+        if not self.deduplicator.enabled:
+            return leads_for_deep
+
+        # Load all previously stored embeddings from DB
+        existing_with_embs = []
+        for db_lead in self.db.query(Lead).filter(Lead.embedding.isnot(None)).all():
+            try:
+                emb = json.loads(db_lead.embedding)
+                existing_with_embs.append((db_lead, emb))
+            except Exception:
+                pass
+
+        unique = []
+        batch_embs = []  # embeddings of non-duplicate leads in this batch
+        n_dup = 0
+
+        for lead, item, classification in leads_for_deep:
+            try:
+                emb = self.deduplicator.compute_embedding(
+                    company=lead.company or "",
+                    title=lead.title,
+                    israeli_law_basis=lead.israeli_law_basis or "",
+                )
+                match, score = self.deduplicator.find_duplicate(
+                    emb, existing_with_embs + batch_embs
+                )
+                if match:
+                    lead.is_duplicate_of_known = True
+                    lead.dedup_group_id = match.dedup_group_id or str(match.id)
+                    lead.known_case_ref = match.title
+                    note = f"🔁 כפילות של ליד #{match.id} (דמיון {score:.0%})"
+                    lead.notes = (lead.notes + "\n" if lead.notes else "") + note
+                    n_dup += 1
+                    logger.info(f"  [DEDUP] {lead.title[:45]} ≈ {match.title[:45]} ({score:.0%})")
+                else:
+                    lead.embedding = json.dumps(emb)
+                    lead.dedup_group_id = str(lead.id)
+                    unique.append((lead, item, classification))
+                    batch_embs.append((lead, emb))
+            except Exception as e:
+                logger.warning(f"  [DEDUP] Error for lead {lead.id}: {e}")
+                unique.append((lead, item, classification))
+
+        self.db.commit()
+        logger.info(f"Dedup: {len(unique)} unique, {n_dup} duplicates merged")
+        return unique
 
     def _check_known_cases(self, lead: Lead) -> bool:
         """

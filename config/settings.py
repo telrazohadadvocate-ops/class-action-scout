@@ -36,6 +36,10 @@ DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 import secrets as _secrets
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY") or _secrets.token_hex(32)
 
+# ── Semantic deduplication ─────────────────────────────
+VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY", "")
+DEDUP_THRESHOLD = float(os.getenv("DEDUP_THRESHOLD", "0.85"))
+
 # ── API Keys (set via env vars or .env file) ───────────
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")

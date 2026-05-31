@@ -31,3 +31,5 @@ services:
         sync: false
       - key: FLASK_SECRET_KEY
         sync: false
+      - key: VOYAGE_API_KEY
+        sync: false

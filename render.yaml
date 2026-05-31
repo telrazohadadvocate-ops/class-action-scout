@@ -27,3 +27,7 @@ services:
         value: "true"
       - key: CRON_SECRET
         sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: FLASK_SECRET_KEY
+        sync: false

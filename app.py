@@ -4,23 +4,36 @@ Class Action Scout — Web Application
 """
 import sys, os, json, threading, argparse
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
 
 if sys.platform == "win32":
     os.environ["PYTHONUTF8"] = "1"
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, session, redirect, url_for, render_template
 from flask_cors import CORS
-from config.settings import DATABASE_URL, DATABASE_PATH
+from config.settings import DATABASE_URL, DATABASE_PATH, DASHBOARD_PASSWORD, FLASK_SECRET_KEY
 from database.models import init_database, get_session, Lead, ScrapeLog
 
 app = Flask(__name__)
+app.secret_key = FLASK_SECRET_KEY
+app.permanent_session_lifetime = timedelta(days=7)
 CORS(app)
 DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
 init_database(DATABASE_URL)
 
 def get_db():
     return get_session(DATABASE_URL)
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("authenticated"):
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "unauthorized"}), 401
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated
 
 def _lead_to_dict(lead):
     return {
@@ -43,7 +56,29 @@ def _lead_to_dict(lead):
         "reviewedAt": lead.reviewed_at.isoformat() if lead.reviewed_at else "",
     }
 
+# ── Auth routes ────────────────────────────────────────
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        pwd = request.form.get("password", "")
+        if DASHBOARD_PASSWORD and pwd == DASHBOARD_PASSWORD:
+            session.permanent = True
+            session["authenticated"] = True
+            return redirect(url_for("dashboard"))
+        error = "סיסמה שגויה"
+    return render_template("login.html", error=error)
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+# ── Page routes ────────────────────────────────────────
+
 @app.route("/")
+@login_required
 def dashboard():
     return send_from_directory("templates", "dashboard.html")
 
@@ -51,7 +86,10 @@ def dashboard():
 def static_files(filename):
     return send_from_directory("static", filename)
 
+# ── API routes ─────────────────────────────────────────
+
 @app.route("/api/leads")
+@login_required
 def get_leads():
     db = get_db()
     q = db.query(Lead)
@@ -72,12 +110,14 @@ def get_leads():
     return jsonify({"total": total, "leads": [_lead_to_dict(l) for l in leads]})
 
 @app.route("/api/leads/<int:lid>")
+@login_required
 def get_lead(lid):
     db = get_db()
     lead = db.query(Lead).get(lid)
     return jsonify(_lead_to_dict(lead)) if lead else (jsonify({"error":"not found"}),404)
 
 @app.route("/api/leads/<int:lid>/status", methods=["PUT"])
+@login_required
 def update_status(lid):
     db = get_db()
     lead = db.query(Lead).get(lid)
@@ -89,6 +129,7 @@ def update_status(lid):
     return jsonify(_lead_to_dict(lead))
 
 @app.route("/api/stats")
+@login_required
 def get_stats():
     db = get_db()
     last = db.query(ScrapeLog).order_by(ScrapeLog.completed_at.desc()).first()
@@ -103,11 +144,11 @@ def get_stats():
 
 @app.route("/api/run", methods=["POST"])
 def trigger_run():
+    authed = session.get("authenticated", False)
     cron_secret = os.getenv("CRON_SECRET", "")
-    if cron_secret:
-        provided = request.headers.get("X-Cron-Secret", "")
-        if provided != cron_secret:
-            return jsonify({"error": "unauthorized"}), 401
+    provided = request.headers.get("X-Cron-Secret", "")
+    if not authed and not (cron_secret and provided == cron_secret):
+        return jsonify({"error": "unauthorized"}), 401
     data = request.get_json(silent=True) or {}
     def run():
         try:
@@ -118,6 +159,7 @@ def trigger_run():
     return jsonify({"status": "started"})
 
 @app.route("/api/reanalyze", methods=["POST"])
+@login_required
 def trigger_reanalyze():
     data = request.get_json(silent=True) or {}  # noqa: F841
     db = get_db()
@@ -136,6 +178,7 @@ def trigger_reanalyze():
     return jsonify({"status": "started", "pending_count": pending_count})
 
 @app.route("/api/run-pacer", methods=["POST"])
+@login_required
 def trigger_pacer():
     data = request.get_json(silent=True) or {}  # noqa: F841
     db = get_db()
@@ -151,6 +194,7 @@ def trigger_pacer():
     return jsonify({"status": "started", "lead_count": lead_count})
 
 @app.route("/api/scrape-logs")
+@login_required
 def get_logs():
     db = get_db()
     logs = db.query(ScrapeLog).order_by(ScrapeLog.started_at.desc()).limit(50).all()
@@ -160,6 +204,7 @@ def get_logs():
     } for l in logs])
 
 @app.route("/api/known-cases")
+@login_required
 def known_cases():
     from config.settings import KNOWN_CASES
     return jsonify(KNOWN_CASES)

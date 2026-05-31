@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>כניסה — Class Action Scout</title>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0B0D12;
+  --surface: #13151C;
+  --border: #1F2335;
+  --border-light: #272B3E;
+  --indigo: #5E6AD2;
+  --indigo-dim: #4A55B0;
+  --indigo-glow: rgba(94,106,210,0.15);
+  --text: #C8CADE;
+  --text-bright: #E8EAF4;
+  --text-secondary: #7B8099;
+  --text-dim: #444860;
+  --red: #E06C75;
+  --radius: 7px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{
+  font-family:'Heebo',sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+}
+
+.card{
+  width:100%;
+  max-width:360px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:40px 36px 36px;
+  box-shadow:0 24px 64px rgba(0,0,0,0.5);
+}
+
+.brand{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  margin-bottom:32px;
+}
+.brand-icon{
+  width:36px;height:36px;border-radius:9px;flex-shrink:0;
+  background:linear-gradient(135deg,var(--indigo),#7C86E8);
+  display:flex;align-items:center;justify-content:center;
+}
+.brand-icon svg{width:18px;height:18px;fill:#fff}
+.brand-text{}
+.brand-name{font-size:14px;font-weight:600;color:var(--text-bright);letter-spacing:-0.01em}
+.brand-sub{font-size:11px;color:var(--text-dim);margin-top:2px}
+
+h1{
+  font-size:20px;
+  font-weight:600;
+  color:var(--text-bright);
+  margin-bottom:6px;
+}
+.subtitle{
+  font-size:13px;
+  color:var(--text-secondary);
+  margin-bottom:28px;
+}
+
+.field{
+  margin-bottom:16px;
+}
+label{
+  display:block;
+  font-size:12px;
+  font-weight:500;
+  color:var(--text-secondary);
+  margin-bottom:6px;
+}
+input[type="password"]{
+  width:100%;
+  padding:10px 14px;
+  background:#0D0F16;
+  border:1px solid var(--border-light);
+  border-radius:var(--radius);
+  color:var(--text-bright);
+  font-size:14px;
+  font-family:'Heebo',sans-serif;
+  outline:none;
+  transition:border-color .15s,box-shadow .15s;
+  direction:ltr;
+  text-align:right;
+}
+input[type="password"]:focus{
+  border-color:var(--indigo);
+  box-shadow:0 0 0 3px var(--indigo-glow);
+}
+input[type="password"]::placeholder{color:var(--text-dim)}
+
+.error{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  background:rgba(224,108,117,0.08);
+  border:1px solid rgba(224,108,117,0.2);
+  border-radius:var(--radius);
+  padding:10px 14px;
+  font-size:13px;
+  color:var(--red);
+  margin-bottom:16px;
+}
+
+button[type="submit"]{
+  width:100%;
+  padding:11px 16px;
+  background:var(--indigo);
+  border:none;
+  border-radius:var(--radius);
+  color:#fff;
+  font-size:14px;
+  font-weight:600;
+  font-family:'Heebo',sans-serif;
+  cursor:pointer;
+  margin-top:4px;
+  transition:background .15s,box-shadow .15s;
+}
+button[type="submit"]:hover{
+  background:var(--indigo-dim);
+  box-shadow:0 4px 16px rgba(94,106,210,0.3);
+}
+button[type="submit"]:active{
+  background:#3D478A;
+}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="brand">
+    <div class="brand-icon">
+      <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+    </div>
+    <div class="brand-text">
+      <div class="brand-name">Class Action Scout</div>
+      <div class="brand-sub">Levin Telraz Law Office</div>
+    </div>
+  </div>
+
+  <h1>כניסה למערכת</h1>
+  <p class="subtitle">הזן סיסמה כדי להמשיך</p>
+
+  {% if error %}
+  <div class="error">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    {{ error }}
+  </div>
+  {% endif %}
+
+  <form method="post" action="/login">
+    <div class="field">
+      <label for="password">סיסמה</label>
+      <input type="password" id="password" name="password" placeholder="••••••••" autofocus autocomplete="current-password">
+    </div>
+    <button type="submit">כניסה</button>
+  </form>
+</div>
+</body>
+</html>

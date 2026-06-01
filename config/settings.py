@@ -68,11 +68,9 @@ WEEKLY_REPORT_DAY = "sunday"
 WEEKLY_REPORT_HOUR = 8
 
 # ── Email (for reports) ───────────────────────────────
-SMTP_HOST = os.getenv("SMTP_HOST", "")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "")
-SMTP_PASS = os.getenv("SMTP_PASS", "")
-REPORT_RECIPIENTS = os.getenv("REPORT_RECIPIENTS", "").split(",")
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
+ALERT_FROM_EMAIL = os.getenv("ALERT_FROM_EMAIL", "")
+ALERT_RECIPIENT = os.getenv("ALERT_RECIPIENT", "")
 
 # ── Sources ────────────────────────────────────────────
 SOURCES = {

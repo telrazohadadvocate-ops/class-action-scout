@@ -1,19 +1,14 @@
 """
-High-priority lead alert emails via plain SMTP.
+High-priority lead alert emails via SendGrid API.
 
 Environment variables (all optional — missing vars disable sending):
-  SMTP_HOST       SMTP server host (default: smtp.office365.com)
-  SMTP_PORT       SMTP port        (default: 587)
-  SMTP_USER       Sender address
-  SMTP_PASSWORD   App password (also accepts legacy SMTP_PASS)
-  ALERT_RECIPIENT Recipient address (defaults to SMTP_USER)
-  DASHBOARD_URL   Base URL shown in emails
+  SENDGRID_API_KEY  SendGrid API key
+  ALERT_FROM_EMAIL  Sender address (verified in SendGrid)
+  ALERT_RECIPIENT   Recipient address
+  DASHBOARD_URL     Base URL shown in emails
 """
 import os
-import smtplib
 import logging
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from datetime import datetime
 from pathlib import Path
 
@@ -80,20 +75,21 @@ def _build_lead_row(lead: dict) -> str:
 
 def send_alert_email(leads: list) -> bool:
     """
-    Send an HTML digest email with high-priority leads.
+    Send an HTML digest email with high-priority leads via SendGrid.
     Returns True on success, False if skipped or failed.
     """
-    smtp_host = os.getenv("SMTP_HOST", "smtp.office365.com")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
-    smtp_user = os.getenv("SMTP_USER", "")
-    smtp_password = os.getenv("SMTP_PASSWORD") or os.getenv("SMTP_PASS", "")
-    recipient = os.getenv("ALERT_RECIPIENT") or smtp_user
+    api_key = os.getenv("SENDGRID_API_KEY", "")
+    from_email = os.getenv("ALERT_FROM_EMAIL", "")
+    recipient = os.getenv("ALERT_RECIPIENT", "")
 
-    if not smtp_user or not smtp_password:
-        logger.warning("SMTP_USER or SMTP_PASSWORD not set — skipping email alert")
+    if not api_key:
+        logger.warning("SENDGRID_API_KEY not set — skipping email alert")
+        return False
+    if not from_email:
+        logger.warning("ALERT_FROM_EMAIL not set — skipping email alert")
         return False
     if not recipient:
-        logger.warning("ALERT_RECIPIENT not configured — skipping email alert")
+        logger.warning("ALERT_RECIPIENT not set — skipping email alert")
         return False
 
     template = _TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -111,19 +107,18 @@ def send_alert_email(leads: list) -> bool:
 
     subject = f"\U0001f514 Scout — {count} ליד{'ים' if count != 1 else ''} חד{'שים' if count != 1 else 'ש'} בעדיפות גבוהה ({date_str})"
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = smtp_user
-    msg["To"] = recipient
-    msg.attach(MIMEText(html, "html", "utf-8"))
-
     try:
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(smtp_user, smtp_password)
-            server.sendmail(smtp_user, [recipient], msg.as_string())
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import Mail
+
+        message = Mail(
+            from_email=from_email,
+            to_emails=recipient,
+            subject=subject,
+            html_content=html,
+        )
+        sg = SendGridAPIClient(api_key)
+        sg.send(message)
         logger.info(f"Alert email sent to {recipient} ({count} leads)")
         return True
     except Exception as e:

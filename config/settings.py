@@ -203,11 +203,11 @@ SOURCES = {
 
     # ═══ GOOGLE ALERTS (RSS feeds) ═══
     "google_alerts_classaction_il": {
-        "enabled": False,  # Enable after setting up Google Alert RSS
-        "url": "",  # Paste your Google Alert RSS feed URL here
+        "enabled": True,
+        "url": "https://www.google.com/alerts/feeds/16238509347590318752/16797255801742262455",
         "type": "alerts",
-        "desc": "Google Alert: תובענה ייצוגית ישראל",
-        "notes": "Create at google.com/alerts, select RSS delivery, paste URL here",
+        "desc": "Google Alert: תובענה ייצוגית / בקשת אישור (replaces geo-blocked gov.il)",
+        "notes": "Atom feed — parsed by GoogleAlertsRSSScraper",
     },
     "google_alerts_consumer_il": {
         "enabled": False,

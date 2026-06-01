@@ -157,7 +157,7 @@ SOURCES = {
         "notes": "Requires Playwright for JS-rendered content",
     },
     "trustpilot_il": {
-        "enabled": True,
+        "enabled": False,  # Cloudflare bot-protection returns 403 even with browser headers; needs Playwright to bypass — low-signal source, not worth the overhead
         "url": "https://www.trustpilot.com/categories",  # il.trustpilot.com 301s here
         "type": "local_forum",
         "desc": "Trustpilot Israel — consumer reviews & complaints",

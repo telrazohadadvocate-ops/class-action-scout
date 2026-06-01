@@ -158,20 +158,23 @@ SOURCES = {
     },
     "trustpilot_il": {
         "enabled": True,
-        "url": "https://il.trustpilot.com/categories",
+        "url": "https://www.trustpilot.com/categories",  # il.trustpilot.com 301s here
         "type": "local_forum",
         "desc": "Trustpilot Israel — consumer reviews & complaints",
     },
 
     # ═══ ISRAELI REGULATORS ═══
+    # consumer_protection_il, competition_authority_il, telecom_authority_il are
+    # disabled: gov.il returns 403 to Render's US-based datacenter IPs (geo-block).
+    # Re-enable via a residential/Israeli proxy, or replace with Google Alerts RSS feeds.
     "consumer_protection_il": {
-        "enabled": True,
+        "enabled": False,  # geo-blocked on US servers (403)
         "url": "https://www.gov.il/he/departments/consumer-protection-and-fair-trade-authority/govil-landing-page",
         "type": "regulatory_il",
         "desc": "רשות הגנת הצרכן — enforcement, warnings, recalls",
     },
     "competition_authority_il": {
-        "enabled": True,
+        "enabled": False,  # geo-blocked on US servers (403)
         "url": "https://www.gov.il/he/departments/competition_authority/govil-landing-page",
         "type": "regulatory_il",
         "desc": "רשות התחרות — decisions, exemptions, enforcement",
@@ -183,7 +186,7 @@ SOURCES = {
         "desc": "רשות שוק ההון — enforcement actions, investor alerts",
     },
     "telecom_authority_il": {
-        "enabled": True,
+        "enabled": False,  # geo-blocked on US servers (403)
         "url": "https://www.gov.il/he/departments/ministry_of_communication",
         "type": "regulatory_il",
         "desc": "משרד התקשורת — telecom enforcement, consumer protection",

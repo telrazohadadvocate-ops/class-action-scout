@@ -4,7 +4,7 @@ Database models for Class Action Scout
 from datetime import datetime, timezone
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, Float,
-    Boolean, DateTime, ForeignKey, JSON,
+    Boolean, DateTime, ForeignKey, JSON, text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
@@ -58,6 +58,15 @@ class Lead(Base):
     expertise_area = Column(String(255))
     is_duplicate_of_known = Column(Boolean, default=False)
     known_case_ref = Column(String(255))
+
+    # Value estimation (rough triage estimates — NOT legal/financial advice)
+    value_low = Column(Float)               # low end of estimated range, NIS
+    value_high = Column(Float)              # high end of estimated range, NIS
+    est_class_size = Column(Integer)        # estimated midpoint class members
+    est_damage_per_member = Column(Float)   # estimated avg damage per member, NIS
+    priority_score = Column(Float)          # 1-10 composite (value+cert+expertise)
+    value_confidence = Column(String(10))   # "high" / "medium" / "low"
+    value_reasoning = Column(Text)          # brief explanation of the estimate
 
     # Semantic deduplication
     embedding = Column(Text)            # JSON-serialized list[float] from Voyage AI
@@ -124,9 +133,34 @@ class AlertLog(Base):
 
 # ── DB initialization ──────────────────────────────────
 
+def _run_migrations(engine) -> None:
+    """
+    ALTER TABLE migrations for columns added after initial deploy.
+    Each statement is tried independently; OperationalError means the
+    column already exists, which is silently ignored.
+    """
+    new_cols = [
+        ("value_low",            "REAL"),
+        ("value_high",           "REAL"),
+        ("est_class_size",       "INTEGER"),
+        ("est_damage_per_member","REAL"),
+        ("priority_score",       "REAL"),
+        ("value_confidence",     "TEXT"),
+        ("value_reasoning",      "TEXT"),
+    ]
+    with engine.connect() as conn:
+        for col, dtype in new_cols:
+            try:
+                conn.execute(text(f"ALTER TABLE leads ADD COLUMN {col} {dtype}"))
+                conn.commit()
+            except Exception:
+                pass  # column already exists
+
+
 def init_database(database_url: str):
     engine = create_engine(database_url)
     Base.metadata.create_all(engine)
+    _run_migrations(engine)
     return engine
 
 

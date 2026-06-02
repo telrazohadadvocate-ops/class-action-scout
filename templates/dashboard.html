@@ -265,6 +265,20 @@ a{color:inherit;text-decoration:none}
 .tag-new{background:var(--indigo-glow);color:var(--indigo);border:1px solid rgba(94,106,210,0.2)}
 .tag-src{background:var(--blue-bg);color:var(--blue);border:1px solid rgba(97,175,239,0.15)}
 
+/* ══ VALUE ESTIMATION DISPLAY ══ */
+.lead-value-row{display:flex;align-items:center;gap:5px;margin-top:3px;flex-wrap:wrap}
+.value-range{font-family:var(--font-mono);font-size:11px;font-weight:600;color:var(--amber)}
+.value-est-label{font-size:9px;color:var(--text-dim);letter-spacing:0.04em}
+.value-conf{font-size:9px;font-weight:600;padding:1px 5px;border-radius:3px}
+.conf-high{color:var(--green);background:var(--green-bg)}
+.conf-medium{color:var(--amber);background:var(--amber-bg)}
+.conf-low{color:var(--text-dim);background:var(--surface-3)}
+.score-pill.ps{border-color:rgba(94,106,210,0.3)}
+.score-pill.ps .score-num{color:var(--indigo)}
+.detail-panel.panel-value{border-color:rgba(212,164,76,0.15);background:linear-gradient(135deg,rgba(212,164,76,0.04),transparent)}
+.ph-value{color:var(--amber)}
+.value-disclaimer{font-size:10px;color:var(--text-dim);font-style:italic;margin-top:6px;padding-top:6px;border-top:1px solid var(--border)}
+
 /* ══ EXPAND DETAIL ══ */
 .lead-detail{
   padding:0 16px 16px;border-top:1px solid var(--border);
@@ -593,6 +607,7 @@ a{color:inherit;text-decoration:none}
         </select>
         <select class="filter-select" id="sort" onchange="loadLeads()">
           <option value="strength">חוזק תיק</option>
+          <option value="priority_score">מיין לפי שווי</option>
           <option value="relevance">רלוונטיות</option>
           <option value="date">תאריך</option>
         </select>
@@ -907,6 +922,24 @@ function renderStats() {
 // ═══════════════════════════════════════════════
 function sc(v){return v>=7?'hi':v>=4?'mid':'lo'}
 
+function fmtNis(v) {
+  if (!v || v <= 0) return null;
+  if (v >= 1e9) return '₪' + (v/1e9).toFixed(1).replace(/\.0$/,'') + 'B';
+  if (v >= 1e6) return '₪' + (v/1e6).toFixed(1).replace(/\.0$/,'') + 'M';
+  if (v >= 1e3) return '₪' + Math.round(v/1e3) + 'K';
+  return '₪' + Math.round(v);
+}
+
+function buildValueBadge(l) {
+  if (!l.valueLow && !l.valueHigh) return '';
+  const lo = fmtNis(l.valueLow), hi = fmtNis(l.valueHigh);
+  const range = (lo && hi) ? lo + '–' + hi : (hi || lo || '');
+  const confMap = {high:{label:'גבוה',cls:'conf-high'},medium:{label:'בינוני',cls:'conf-medium'},low:{label:'נמוך',cls:'conf-low'}};
+  const conf = confMap[l.valueConfidence] || confMap.low;
+  const tip = (l.valueReasoning || '').replace(/"/g, '&quot;').replace(/\n/g, ' ');
+  return `<div class="lead-value-row" title="${tip}"><span class="value-range">${range}</span><span class="value-est-label">הערכה גסה לתעדוף</span><span class="value-conf ${conf.cls}">${conf.label}</span></div>`;
+}
+
 function renderLeads() {
   const el = document.getElementById('leadsContainer');
   if (!leads.length) {
@@ -947,6 +980,28 @@ function buildLeadCard(l) {
       </div>
       ${l.legalAnalysis?`<div class="detail-panel"><div class="detail-panel-head ph-legal"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><circle cx="5" cy="5" r="4.5"/></svg> ניתוח משפטי</div>${l.legalAnalysis}</div>`:''}
       ${l.recommendedAction?`<div class="detail-panel panel-action"><div class="detail-panel-head ph-action"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><polygon points="1,1 9,5 1,9"/></svg> המלצת פעולה</div>${l.recommendedAction}</div>`:''}
+      ${(l.valueLow||l.valueHigh)?(() => {
+        const lo=fmtNis(l.valueLow),hi=fmtNis(l.valueHigh);
+        const range=(lo&&hi)?lo+'–'+hi:(hi||lo||'—');
+        const confMap={high:{label:'גבוה',cls:'conf-high'},medium:{label:'בינוני',cls:'conf-medium'},low:{label:'נמוך',cls:'conf-low'}};
+        const conf=confMap[l.valueConfidence]||confMap.low;
+        const csText=l.estClassSize?'~'+l.estClassSize.toLocaleString()+' חברי קבוצה':'—';
+        const dmText=l.estDamagePerMember?fmtNis(l.estDamagePerMember)+'/חבר':'—';
+        return `<div class="detail-panel panel-value">
+          <div class="detail-panel-head ph-value">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"/><path d="M5 2v6M3 4h3.5M3 6h3.5"/></svg>
+            הערכת שווי — <span class="value-conf ${conf.cls}" style="margin-inline-start:4px">${conf.label}</span>
+          </div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:6px">
+            <div><div class="dg-label">טווח שווי כולל</div><div style="font-family:var(--font-mono);font-size:14px;font-weight:600;color:var(--amber)">${range}</div></div>
+            <div><div class="dg-label">גודל קבוצה מוערך</div><div style="font-size:12px;color:var(--text)">${csText}</div></div>
+            <div><div class="dg-label">נזק לחבר</div><div style="font-size:12px;color:var(--text)">${dmText}</div></div>
+            ${l.priorityScore!=null?`<div><div class="dg-label">ציון עדיפות</div><div style="font-family:var(--font-mono);font-size:14px;font-weight:600;color:var(--indigo)">${l.priorityScore}/10</div></div>`:''}
+          </div>
+          ${l.valueReasoning?`<div style="font-size:11.5px;color:var(--text-secondary);line-height:1.6">${l.valueReasoning}</div>`:''}
+          <div class="value-disclaimer">⚠ הערכה גסה לצורכי תעדוף בלבד — אינה ייעוץ משפטי או פיננסי</div>
+        </div>`;
+      })():''}
       ${l.notes?`<div class="detail-panel"><div class="detail-panel-head ph-notes"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="8" height="8" rx="1"/></svg> הערות</div>${l.notes.replace(/\n/g,'<br>')}</div>`:''}
       <div class="detail-actions">
         ${btns}
@@ -967,10 +1022,12 @@ function buildLeadCard(l) {
           ${tags}
         </div>
         <div class="lead-headline">${l.title}</div>
+        ${buildValueBadge(l)}
       </div>
       <div class="lead-scores">
         <div class="score-pill"><div class="score-num ${sc(l.relevanceScore||0)}">${l.relevanceScore||0}</div><div class="score-lbl">רלוונטיות</div></div>
         <div class="score-pill"><div class="score-num ${sc(l.strengthScore||0)}">${l.strengthScore||0}</div><div class="score-lbl">חוזק</div></div>
+        ${l.priorityScore != null ? `<div class="score-pill ps"><div class="score-num">${l.priorityScore}</div><div class="score-lbl">עדיפות</div></div>` : ''}
       </div>
     </div>${detail}</div>`;
 }

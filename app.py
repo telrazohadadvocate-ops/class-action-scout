@@ -57,6 +57,14 @@ def _lead_to_dict(lead, duplicate_count=1):
         "status": lead.status or "new", "notes": lead.notes or "",
         "scrapedAt": lead.scraped_at.isoformat() if lead.scraped_at else "",
         "reviewedAt": lead.reviewed_at.isoformat() if lead.reviewed_at else "",
+        # Value estimation (rough triage — not legal/financial advice)
+        "priorityScore": lead.priority_score,
+        "valueLow": lead.value_low,
+        "valueHigh": lead.value_high,
+        "estClassSize": lead.est_class_size,
+        "estDamagePerMember": lead.est_damage_per_member,
+        "valueConfidence": lead.value_confidence or "",
+        "valueReasoning": lead.value_reasoning or "",
     }
 
 # ── Auth routes ────────────────────────────────────────
@@ -108,6 +116,7 @@ def get_leads():
         q = q.filter((Lead.title.ilike(like))|(Lead.company.ilike(like))|(Lead.legal_analysis.ilike(like)))
     sort = request.args.get("sort", "strength")
     if sort == "strength": q = q.order_by(Lead.strength_score.desc().nullslast())
+    elif sort == "priority_score": q = q.order_by(Lead.priority_score.desc().nullslast())
     elif sort == "relevance": q = q.order_by(Lead.relevance_score.desc().nullslast())
     elif sort == "date": q = q.order_by(Lead.scraped_at.desc())
     total = q.count()

@@ -202,6 +202,17 @@ class ClassActionScout:
 
             self.db.commit()
 
+        # 3. STAGE 3 — VALUE ESTIMATION
+        if leads_for_analysis:
+            logger.info("Stage 3: Value estimation...")
+            from analysis.value_estimator import estimate_value
+            for lead, _, _ in leads_for_analysis:
+                try:
+                    estimate_value(lead, self.analyzer.client, self.analyzer.model)
+                except Exception as e:
+                    logger.warning(f"  value estimation error for lead {lead.id}: {e}")
+            self.db.commit()
+
         # 3.5. STAGE 3.5 — PACER ENRICHMENT
         if leads_for_analysis:
             logger.info("Stage 3.5: PACER Enrichment...")
@@ -356,6 +367,8 @@ class ClassActionScout:
                 )
                 lead.is_duplicate_of_known = self._check_known_cases(lead)
                 lead.matches_expertise = self._check_expertise(lead)
+                from analysis.value_estimator import estimate_value
+                estimate_value(lead, self.analyzer.client, self.analyzer.model)
                 done += 1
                 logger.info(f"  [{done}/{len(pending)}] {lead.title[:60]}")
             except Exception as e:

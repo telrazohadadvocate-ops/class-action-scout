@@ -57,7 +57,10 @@ def estimate_value(lead, client, model: str) -> None:
         f"\nHint — Stage-1 estimated_class_size: {lead.estimated_class_size}"
         if lead.estimated_class_size else ""
     )
-    prompt = _PROMPT.format(text=text, hint=hint)
+    # Escape any { } in scraped text so str.format() doesn't treat them as slots
+    safe_text = text.replace("{", "{{").replace("}", "}}")
+    safe_hint = hint.replace("{", "{{").replace("}", "}}")
+    prompt = _PROMPT.format(text=safe_text, hint=safe_hint)
 
     value_high_for_score = None
     try:

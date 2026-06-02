@@ -70,18 +70,21 @@ def main():
         print(f"Batch {batch_idx}/{len(batches)} ({len(batch)} leads)...")
         for lead in batch:
             try:
-                if not args.dry_run:
-                    estimate_value(lead, client, CLAUDE_MODEL)
-                else:
-                    # Dry-run: still call to show what would be written
-                    estimate_value(lead, client, CLAUDE_MODEL)
-                    # Then immediately undo
+                estimate_value(lead, client, CLAUDE_MODEL)
+                # Capture computed values for display before any undo
+                ps_display = lead.priority_score
+                vh_display = lead.value_high
+                conf_display = lead.value_confidence
+
+                if args.dry_run:
+                    # Undo writes — DB never touched
                     lead.value_low = lead.value_high = lead.est_class_size = None
                     lead.est_damage_per_member = lead.priority_score = None
                     lead.value_confidence = lead.value_reasoning = None
+
                 done += 1
-                print(f"  [{done}/{total}] #{lead.id} — score={lead.priority_score} "
-                      f"value={lead.value_high}")
+                print(f"  [{done}/{total}] #{lead.id} — score={ps_display} "
+                      f"value={vh_display} conf={conf_display}")
             except Exception as e:
                 errors += 1
                 print(f"  [{done}/{total}] #{lead.id} ERROR: {e}")

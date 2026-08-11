@@ -26,9 +26,12 @@ DATABASE_PATH = DATA_DIR / "scout.db"
 DATABASE_URL = f"sqlite:///{DATABASE_PATH}"
 LOG_DIR = BASE_DIR / "logs"
 
-# Persistent-disk paths for credentials that must survive redeploys
+# Persistent-disk paths for credentials that must survive redeploys.
+# OUTLOOK_TOKEN_PATH is overridable via env var; the default lives on the Render
+# persistent disk (/var/data) so the OAuth token survives deploys. Setting the
+# env var lets you relocate it without a code change.
 PACER_COOKIES_PATH = DATA_DIR / "pacer_cookies.json"
-OUTLOOK_TOKEN_PATH = DATA_DIR / "outlook_token.json"
+OUTLOOK_TOKEN_PATH = Path(os.getenv("OUTLOOK_TOKEN_PATH", str(DATA_DIR / "outlook_token.json")))
 
 # ── Web Dashboard Auth ─────────────────────────────────
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
@@ -67,9 +70,8 @@ DAILY_RUN_HOUR = 6             # 06:00 local time
 WEEKLY_REPORT_DAY = "sunday"
 WEEKLY_REPORT_HOUR = 8
 
-# ── Email (for reports) ───────────────────────────────
-SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
-ALERT_FROM_EMAIL = os.getenv("ALERT_FROM_EMAIL", "")
+# ── Email alerts (via Microsoft Graph — reuses the Outlook delegated token) ──
+# Recipient defaults to the authenticated mailbox (OUTLOOK_USER_EMAIL) when unset.
 ALERT_RECIPIENT = os.getenv("ALERT_RECIPIENT", "")
 
 # ── Sources ────────────────────────────────────────────

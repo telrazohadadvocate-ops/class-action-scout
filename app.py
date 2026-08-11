@@ -246,13 +246,13 @@ def test_email():
         "title": "בדיקת מערכת התראות — Class Action Scout",
         "company": "Acme Corp (Test)",
         "source_name": "test",
-        "recommended_action": "זוהי הודעת בדיקה לאימות תצורת SendGrid. אם קיבלת מייל זה, ההגדרות תקינות.",
+        "recommended_action": "זוהי הודעת בדיקה לאימות תצורת Microsoft Graph. אם קיבלת מייל זה, ההגדרות תקינות.",
         "strength_score": 9,
     }]
     ok = send_alert_email(dummy)
     if ok:
         return jsonify({"status": "sent"})
-    return jsonify({"status": "error", "detail": "Check SENDGRID_API_KEY / ALERT_FROM_EMAIL in env vars"}), 500
+    return jsonify({"status": "error", "detail": "Graph auth missing or token expired — run scripts/setup_outlook.py to (re)authenticate with the Mail.Send scope. Check OUTLOOK_CLIENT_ID and the token at OUTLOOK_TOKEN_PATH (/var/data/outlook_token.json on Render)."}), 500
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

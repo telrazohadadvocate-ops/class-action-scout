@@ -1,11 +1,16 @@
 """
-High-priority lead alert emails via SendGrid API.
+High-priority lead alert emails via Microsoft Graph (sendMail).
 
-Environment variables (all optional — missing vars disable sending):
-  SENDGRID_API_KEY  SendGrid API key
-  ALERT_FROM_EMAIL  Sender address (verified in SendGrid)
-  ALERT_RECIPIENT   Recipient address
-  DASHBOARD_URL     Base URL shown in emails
+Reuses the delegated Outlook token created by scripts/setup_outlook.py — the
+same shared token cache the Law360 reader uses, now including the Mail.Send
+scope. No SendGrid. Mail is sent as the authenticated mailbox (/me/sendMail).
+
+Environment variables:
+  OUTLOOK_CLIENT_ID   Azure app client ID (required; shared with the reader)
+  OUTLOOK_TENANT_ID   Tenant ID or "common" (default: common)
+  ALERT_RECIPIENT     Recipient address (default: the authenticated mailbox)
+  OUTLOOK_USER_EMAIL  Authenticated mailbox — used as the default recipient
+  DASHBOARD_URL       Base URL shown in emails
 """
 import os
 import logging
@@ -75,21 +80,39 @@ def _build_lead_row(lead: dict) -> str:
 
 def send_alert_email(leads: list) -> bool:
     """
-    Send an HTML digest email with high-priority leads via SendGrid.
-    Returns True on success, False if skipped or failed.
-    """
-    api_key = os.getenv("SENDGRID_API_KEY", "")
-    from_email = os.getenv("ALERT_FROM_EMAIL", "")
-    recipient = os.getenv("ALERT_RECIPIENT", "")
+    Send an HTML digest email with high-priority leads via Microsoft Graph.
 
-    if not api_key:
-        logger.warning("SENDGRID_API_KEY not set — skipping email alert")
-        return False
-    if not from_email:
-        logger.warning("ALERT_FROM_EMAIL not set — skipping email alert")
+    Reuses the shared delegated Outlook token (Mail.Send scope). Returns True on
+    success, False if auth is missing/expired or the send failed. Never raises —
+    a failure here must not crash the scan pipeline.
+    """
+    client_id = os.getenv("OUTLOOK_CLIENT_ID", "")
+    tenant_id = os.getenv("OUTLOOK_TENANT_ID", "common")
+    # Default the recipient to the authenticated mailbox.
+    recipient = os.getenv("ALERT_RECIPIENT", "") or os.getenv("OUTLOOK_USER_EMAIL", "")
+
+    if not client_id:
+        logger.warning("OUTLOOK_CLIENT_ID not set — skipping email alert")
         return False
     if not recipient:
-        logger.warning("ALERT_RECIPIENT not set — skipping email alert")
+        logger.warning(
+            "Neither ALERT_RECIPIENT nor OUTLOOK_USER_EMAIL set — skipping email alert"
+        )
+        return False
+
+    # Silent refresh only — the interactive device-code flow lives in
+    # scripts/setup_outlook.py. A cold/expired cache means setup must be re-run.
+    try:
+        from scrapers.outlook_law360 import OutlookTokenManager
+        token = OutlookTokenManager(client_id, tenant_id).acquire_token_silent()
+    except Exception as e:
+        logger.error(f"Graph token acquisition error: {e}")
+        return False
+    if not token:
+        logger.warning(
+            "No cached Graph token (or refresh failed) — run scripts/setup_outlook.py "
+            "to authenticate with the Mail.Send scope. Skipping email alert."
+        )
         return False
 
     template = _TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -107,20 +130,32 @@ def send_alert_email(leads: list) -> bool:
 
     subject = f"\U0001f514 Scout — {count} ליד{'ים' if count != 1 else ''} חד{'שים' if count != 1 else 'ש'} בעדיפות גבוהה ({date_str})"
 
-    try:
-        from sendgrid import SendGridAPIClient
-        from sendgrid.helpers.mail import Mail
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {"contentType": "HTML", "content": html},
+            "toRecipients": [{"emailAddress": {"address": recipient}}],
+        },
+        "saveToSentItems": True,
+    }
 
-        message = Mail(
-            from_email=from_email,
-            to_emails=recipient,
-            subject=subject,
-            html_content=html,
+    try:
+        import requests
+        resp = requests.post(
+            "https://graph.microsoft.com/v1.0/me/sendMail",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=30,
         )
-        sg = SendGridAPIClient(api_key)
-        sg.send(message)
-        logger.info(f"Alert email sent to {recipient} ({count} leads)")
-        return True
+        # Graph sendMail returns 202 Accepted with an empty body on success.
+        if resp.status_code == 202:
+            logger.info(f"Alert email sent to {recipient} ({count} leads) via Graph")
+            return True
+        logger.error(f"Graph sendMail failed: {resp.status_code} {resp.text[:400]}")
+        return False
     except Exception as e:
-        logger.error(f"Failed to send alert email: {e}")
+        logger.error(f"Failed to send alert email via Graph: {e}")
         return False

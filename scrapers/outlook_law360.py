@@ -29,7 +29,11 @@ from scrapers.scrapers import BaseScraper, ScrapedItem
 logger = logging.getLogger(__name__)
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
-SCOPES = ["Mail.Read", "User.Read"]
+# Shared delegated scopes for a single token cache. Mail.Read powers this reader;
+# Mail.Send powers alerts/email_sender.py. Adding Mail.Send requires a one-time
+# re-consent (re-run scripts/setup_outlook.py) since the old refresh token
+# predates this scope.
+SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 LAW360_SENDER = "news-alt@law360.com"
 try:
     from config.settings import OUTLOOK_TOKEN_PATH as TOKEN_PATH

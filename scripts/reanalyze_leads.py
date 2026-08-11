@@ -125,6 +125,9 @@ def main():
         print("Nothing to process.")
         return
 
+    # Snapshot pre-run priority_score for the before/after summary (immutable floats)
+    before_scores = {l.id: l.priority_score for l in leads}
+
     batches = [leads[i:i + args.batch_size] for i in range(0, total, args.batch_size)]
     done = errors = 0
 
@@ -151,13 +154,39 @@ def main():
         if bi < len(batches):
             time.sleep(SLEEP_BETWEEN_BATCHES)
 
-    if args.dry_run:
-        db.rollback()
+    # ── Summary (compute BEFORE any rollback — db.rollback() expires the
+    #    in-memory objects and would re-read the old values) ──────────────
+    from collections import Counter
+
+    def _bucket(s):
+        if s is None:
+            return "none"
+        if s < 3:   return "1-3"
+        if s < 5:   return "3-5"
+        if s < 7:   return "5-7"
+        if s < 8.5: return "7-8.5"
+        return "8.5-10"
+
+    order = ["1-3", "3-5", "5-7", "7-8.5", "8.5-10", "none"]
+    filed = sum(1 for l in leads if l.already_filed_il)
+    with_reason = sum(1 for l in leads if l.score_reasoning)
+    before_dist = Counter(_bucket(before_scores.get(l.id)) for l in leads)
+    after_dist = Counter(_bucket(l.priority_score) for l in leads)
 
     print(f"\n{'='*64}")
     print(f"Done. Processed: {done}  Errors: {errors}"
           + ("   (DRY RUN — nothing written)" if args.dry_run else ""))
+    print(f"  already_filed_il = True:    {filed}/{len(leads)}")
+    print(f"  score_reasoning populated:  {with_reason}/{len(leads)}")
+    print(f"  priority_score distribution (before -> after):")
+    for b in order:
+        bd, ad = before_dist.get(b, 0), after_dist.get(b, 0)
+        if bd or ad:
+            print(f"    {b:>7}: {bd:>3} -> {ad:>3}")
     print(f"{'='*64}\n")
+
+    if args.dry_run:
+        db.rollback()
 
 
 if __name__ == "__main__":

@@ -69,6 +69,14 @@ class Lead(Base):
     value_reasoning = Column(Text)          # brief explanation of the estimate
     israel_applicable = Column(Boolean)     # True = genuine Israeli nexus confirmed
 
+    # Already-filed detection — an Israeli class action ALREADY filed on this
+    # matter is a missed opportunity, not a lead. Downranked, never deleted.
+    already_filed_il = Column(Boolean)      # True = Israeli class action already filed
+    already_filed_details = Column(Text)    # short evidence snippet from the source
+
+    # Composite score rationale — JSON {summary,value,strength,israel,change}
+    score_reasoning = Column(Text)
+
     # Semantic deduplication
     embedding = Column(Text)            # JSON-serialized list[float] from Voyage AI
     dedup_group_id = Column(String(50)) # str(canonical_lead.id) for the cluster
@@ -149,6 +157,9 @@ def _run_migrations(engine) -> None:
         ("value_confidence",     "TEXT"),
         ("value_reasoning",      "TEXT"),
         ("israel_applicable",    "INTEGER"),
+        ("already_filed_il",     "INTEGER"),
+        ("already_filed_details","TEXT"),
+        ("score_reasoning",      "TEXT"),
         ("embedding",            "TEXT"),
         ("dedup_group_id",       "TEXT"),
     ]

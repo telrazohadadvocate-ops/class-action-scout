@@ -31,6 +31,21 @@ Perform a thorough legal analysis under Israeli law. Consider:
 
 5. STRATEGIC RECOMMENDATION — practical next steps
 
+6. ALREADY-FILED CHECK — Does the source indicate that an Israeli class action
+   (תובענה ייצוגית / בקשת אישור) has ALREADY BEEN FILED in Israel on THIS matter?
+   Set already_filed_il = true ONLY when the source CLEARLY states an Israeli
+   filing was already made (e.g. "הוגשה תובענה ייצוגית", "הוגשה בקשה לאישור
+   תובענה ייצוגית", a named Israeli court/case, a plaintiff who already filed).
+   Set already_filed_il = false for ALL of these:
+     - a US / foreign lawsuit (even a US class action) with no Israeli filing
+     - a regulatory or enforcement action (רשות, קנס, צו) — not a class action
+     - mere consumer complaints, media coverage, or a call for plaintiffs
+     - anything where an Israeli filing is only possible, rumoured, or unclear
+   BE CONSERVATIVE: if you are not sure an Israeli class action was already
+   filed, set false. A false positive hides a real opportunity — worse than a
+   false negative. When true, put the exact supporting phrase in
+   already_filed_details; when false, leave it "".
+
 Respond ONLY with a JSON object (no markdown, no explanation):
 {{
   "strength_score": <1-10>,
@@ -44,5 +59,7 @@ Respond ONLY with a JSON object (no markdown, no explanation):
   "comparable_cases": ["<case 1>", "<case 2>"],
   "recommended_action": "<specific Hebrew recommendation for next steps>",
   "estimated_damages": "<rough damages range if quantifiable>",
-  "risks": "<key risks and weaknesses>"
+  "risks": "<key risks and weaknesses>",
+  "already_filed_il": <true/false>,
+  "already_filed_details": "<exact Hebrew phrase from the source proving an Israeli filing, or ''>"
 }}

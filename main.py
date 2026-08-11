@@ -190,6 +190,9 @@ class ClassActionScout:
                 lead.comparable_cases = json.dumps(
                     analysis.get("comparable_cases", []), ensure_ascii=False
                 )
+                # Already-filed detection (conservative — see legal_analysis prompt)
+                lead.already_filed_il = bool(analysis.get("already_filed_il", False))
+                lead.already_filed_details = analysis.get("already_filed_details", "") or ""
 
                 # Check against known cases
                 lead.is_duplicate_of_known = self._check_known_cases(lead)
@@ -365,6 +368,9 @@ class ClassActionScout:
                 lead.comparable_cases = json.dumps(
                     analysis.get("comparable_cases", []), ensure_ascii=False
                 )
+                # Already-filed detection (conservative — see legal_analysis prompt)
+                lead.already_filed_il = bool(analysis.get("already_filed_il", False))
+                lead.already_filed_details = analysis.get("already_filed_details", "") or ""
                 lead.is_duplicate_of_known = self._check_known_cases(lead)
                 lead.matches_expertise = self._check_expertise(lead)
                 from analysis.value_estimator import estimate_value
@@ -656,6 +662,11 @@ a {{ color: #2c5282; }}
         unique (non-duplicate) leads for deep analysis.
         """
         if not self.deduplicator.enabled:
+            logger.warning(
+                "Semantic dedup DISABLED (no VOYAGE_API_KEY / voyageai missing) — "
+                "new leads will NOT be embedded or clustered, so duplicates will "
+                "accumulate. Set VOYAGE_API_KEY on the web service to enable."
+            )
             return leads_for_deep
 
         # Load all previously stored embeddings from DB

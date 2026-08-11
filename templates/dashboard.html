@@ -265,6 +265,7 @@ a{color:inherit;text-decoration:none}
 .tag-new{background:var(--indigo-glow);color:var(--indigo);border:1px solid rgba(94,106,210,0.2)}
 .tag-src{background:var(--blue-bg);color:var(--blue);border:1px solid rgba(97,175,239,0.15)}
 .tag-na-il{background:var(--surface-3);color:var(--text-dim);border:1px solid var(--border)}
+.tag-filed{background:var(--red-bg);color:var(--red);border:1px solid rgba(224,108,117,0.35);font-weight:600}
 
 /* ══ VALUE ESTIMATION DISPLAY ══ */
 .lead-value-row{display:flex;align-items:center;gap:5px;margin-top:3px;flex-wrap:wrap}
@@ -302,7 +303,10 @@ a{color:inherit;text-decoration:none}
   margin-bottom:7px;display:flex;align-items:center;gap:5px;
 }
 .ph-legal{color:var(--blue)}.ph-action{color:var(--indigo)}.ph-notes{color:var(--purple)}
+.ph-reason{color:var(--green)}.ph-filed{color:var(--red)}.ph-src{color:var(--blue)}
 .detail-panel.panel-action{border-color:rgba(94,106,210,0.15);background:linear-gradient(135deg,rgba(94,106,210,0.04),transparent)}
+.detail-panel.panel-reason{border-color:rgba(78,201,160,0.15);background:linear-gradient(135deg,rgba(78,201,160,0.04),transparent)}
+.detail-panel.panel-filed{border-color:rgba(224,108,117,0.25);background:linear-gradient(135deg,rgba(224,108,117,0.06),transparent)}
 .detail-actions{display:flex;gap:6px;flex-wrap:wrap;padding-top:4px}
 .status-btn{
   padding:5px 13px;font-size:10px;font-weight:600;letter-spacing:0.03em;
@@ -612,9 +616,19 @@ a{color:inherit;text-decoration:none}
           <option value="relevance">רלוונטיות</option>
           <option value="date">תאריך</option>
         </select>
+        <select class="filter-select" id="ft" onchange="loadLeads()">
+          <option value="today">היום</option>
+          <option value="week">השבוע</option>
+          <option value="month">החודש</option>
+          <option value="all" selected>הכל</option>
+        </select>
         <span style="display:flex;align-items:center;gap:6px;cursor:pointer;flex-shrink:0" onclick="document.getElementById('hideDupToggle').classList.toggle('on');loadLeads()">
           <button class="toggle on" id="hideDupToggle" style="pointer-events:none"></button>
           <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap">הסתר כפילויות</span>
+        </span>
+        <span style="display:flex;align-items:center;gap:6px;cursor:pointer;flex-shrink:0" onclick="document.getElementById('hideFiledToggle').classList.toggle('on');loadLeads()">
+          <button class="toggle" id="hideFiledToggle" style="pointer-events:none"></button>
+          <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap">הסתר שהוגשו</span>
         </span>
         <div class="view-toggle">
           <button class="vt-btn active" id="vt-list" title="רשימה" onclick="setListMode('list')">
@@ -851,7 +865,9 @@ async function loadLeads() {
     status: document.getElementById('fs').value,
     sort: document.getElementById('sort').value,
     search: document.getElementById('search').value,
+    period: document.getElementById('ft').value,
     hide_duplicates: document.getElementById('hideDupToggle').classList.contains('on'),
+    hide_filed: document.getElementById('hideFiledToggle').classList.contains('on'),
     limit: 100
   });
   try {
@@ -939,6 +955,21 @@ function buildValueBadge(l) {
   return `<div class="lead-value-row" title="${tip}"><span class="value-range">${l.valueBucket}</span><span class="value-est-label">הערכה גסה לתעדוף</span><span class="value-conf ${conf.cls}">${conf.label}</span></div>`;
 }
 
+function buildScoreReasoning(sr) {
+  const rows = [
+    ['למה הציון הזה', sr.summary],
+    ['שווי', sr.value],
+    ['חוזק', sr.strength],
+    ['זיקה לישראל', sr.israel],
+    ['מה יוריד/יעלה את הציון', sr.change],
+  ].filter(r => r[1]);
+  if (!rows.length) return '';
+  return `<div class="detail-panel panel-reason">
+    <div class="detail-panel-head ph-reason"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"/><path d="M5 2.5v3l1.8 1.1"/></svg> נימוק הציון</div>`
+    + rows.map(([k, v]) => `<div style="margin-bottom:5px;line-height:1.6"><span style="font-weight:600;color:var(--text)">${k}:</span> <span style="color:var(--text-secondary)">${v}</span></div>`).join('')
+    + `</div>`;
+}
+
 function renderLeads() {
   const el = document.getElementById('leadsContainer');
   if (!leads.length) {
@@ -952,6 +983,7 @@ function buildLeadCard(l) {
   const isOpen = expandedId === l.id;
   let tags = '';
   if (l.matchesExpertise) tags += `<span class="tag tag-ex">${(l.expertiseArea||'').split('/')[0].trim()||'מומחיות'}</span>`;
+  if (l.alreadyFiledIl) tags += '<span class="tag tag-filed">כבר הוגשה ייצוגית בישראל</span>';
   if (l.isDuplicate) tags += '<span class="tag tag-dup">תיק קיים</span>';
   if (!l.isDuplicate && l.duplicateCount > 1) tags += `<span class="tag tag-src">${l.duplicateCount} מקורות</span>`;
   if (l.pinkasExists) tags += '<span class="tag tag-pin">פנקס</span>';
@@ -1000,7 +1032,11 @@ function buildLeadCard(l) {
           <div class="value-disclaimer">⚠ הערכה גסה לצורכי תעדוף בלבד — אינה ייעוץ משפטי או פיננסי</div>
         </div>`;
       })():''}
+      ${l.alreadyFiledIl?`<div class="detail-panel panel-filed"><div class="detail-panel-head ph-filed"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M5 0L0 9h10z"/></svg> כבר הוגשה ייצוגית בישראל</div><div style="color:var(--text-secondary);line-height:1.6">${l.alreadyFiledDetails||'הניתוח זיהה שכבר הוגשה תובענה ייצוגית בישראל בעניין זה — הזדמנות שהוחמצה, לא ליד. ציון העדיפות הופחת.'}</div></div>`:''}
+      ${l.scoreReasoning?buildScoreReasoning(l.scoreReasoning):''}
+      ${l.relevanceReasoning?`<div class="detail-panel"><div class="detail-panel-head ph-legal"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><circle cx="5" cy="5" r="4.5"/></svg> בסיס הרלוונטיות</div>${l.relevanceReasoning}</div>`:''}
       ${l.notes?`<div class="detail-panel"><div class="detail-panel-head ph-notes"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="8" height="8" rx="1"/></svg> הערות</div>${l.notes.replace(/\n/g,'<br>')}</div>`:''}
+      ${(l.mergedSources&&l.mergedSources.length>1)?`<div class="detail-panel"><div class="detail-panel-head ph-src"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 5h6M6 2l3 3-3 3"/></svg> ${l.mergedSources.length} מקורות ממוזגים</div>${l.mergedSources.map(s=>`<div style="margin-bottom:3px"><a href="${s.url||'#'}" target="_blank" onclick="event.stopPropagation()" style="color:var(--blue);text-decoration:none">${s.source||'מקור'}</a> — <span style="color:var(--text-secondary)">${(s.title||'').replace(/</g,'&lt;')}</span></div>`).join('')}</div>`:''}
       <div class="detail-actions">
         ${btns}
         <a class="source-link" href="${l.sourceUrl||'#'}" target="_blank" onclick="event.stopPropagation()">

@@ -37,7 +37,7 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated
 
-def _lead_to_dict(lead, duplicate_count=1):
+def _lead_to_dict(lead, duplicate_count=1, merged_sources=None):
     return {
         "id": lead.id, "title": lead.title, "company": lead.company or "",
         "sector": lead.sector or "", "source": lead.source_name,
@@ -68,7 +68,23 @@ def _lead_to_dict(lead, duplicate_count=1):
         "estDamagePerMember": lead.est_damage_per_member,
         "valueConfidence": lead.value_confidence or "",
         "valueReasoning": lead.value_reasoning or "",
+        # Already-filed detection + richer reasoning
+        "alreadyFiledIl": lead.already_filed_il,
+        "alreadyFiledDetails": lead.already_filed_details or "",
+        "relevanceReasoning": lead.relevance_reasoning or "",
+        "scoreReasoning": _parse_score_reasoning(lead.score_reasoning),
+        "mergedSources": merged_sources or [],
     }
+
+
+def _parse_score_reasoning(raw):
+    if not raw:
+        return None
+    try:
+        val = json.loads(raw)
+        return val if isinstance(val, dict) and any(val.values()) else None
+    except Exception:
+        return None
 
 # ── Auth routes ────────────────────────────────────────
 
@@ -113,6 +129,20 @@ def get_leads():
     if p and p != "all": q = q.filter(Lead.priority == p)
     s = request.args.get("status")
     if s and s != "all": q = q.filter(Lead.status == s)
+    # Time-period filter on scraped_at (stored naive UTC)
+    period = request.args.get("period", "all")
+    if period in ("today", "week", "month"):
+        now = datetime.now(timezone.utc)
+        if period == "today":
+            since = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif period == "week":
+            since = now - timedelta(days=7)
+        else:
+            since = now - timedelta(days=30)
+        q = q.filter(Lead.scraped_at >= since.replace(tzinfo=None))
+    # Hide leads where an Israeli class action was already filed
+    if request.args.get("hide_filed", "false").lower() == "true":
+        q = q.filter((Lead.already_filed_il == False) | Lead.already_filed_il.is_(None))
     search = request.args.get("search", "")
     if search:
         like = f"%{search}%"
@@ -130,7 +160,25 @@ def get_leads():
         .group_by(Lead.dedup_group_id)
         .all()
     ) if leads else {}
-    return jsonify({"total": total, "leads": [_lead_to_dict(l, group_counts.get(l.dedup_group_id, 1)) for l in leads]})
+    # For canonical leads whose cluster has >1 member, list every merged source
+    merged_map = {}
+    multi_gids = [
+        l.dedup_group_id for l in leads
+        if l.dedup_group_id and group_counts.get(l.dedup_group_id, 1) > 1
+    ]
+    if multi_gids:
+        for gid, title, sname, surl in (
+            db.query(Lead.dedup_group_id, Lead.title, Lead.source_name, Lead.source_url)
+            .filter(Lead.dedup_group_id.in_(set(multi_gids)))
+            .all()
+        ):
+            merged_map.setdefault(gid, []).append(
+                {"title": title, "source": sname or "", "url": surl or ""}
+            )
+    return jsonify({"total": total, "leads": [
+        _lead_to_dict(l, group_counts.get(l.dedup_group_id, 1), merged_map.get(l.dedup_group_id))
+        for l in leads
+    ]})
 
 @app.route("/api/leads/<int:lid>")
 @login_required
@@ -140,7 +188,14 @@ def get_lead(lid):
     if not lead:
         return jsonify({"error": "not found"}), 404
     cnt = db.query(func.count(Lead.id)).filter(Lead.dedup_group_id == lead.dedup_group_id).scalar() if lead.dedup_group_id else 1
-    return jsonify(_lead_to_dict(lead, cnt))
+    merged = None
+    if lead.dedup_group_id and cnt > 1:
+        merged = [
+            {"title": t, "source": sn or "", "url": su or ""}
+            for t, sn, su in db.query(Lead.title, Lead.source_name, Lead.source_url)
+            .filter(Lead.dedup_group_id == lead.dedup_group_id).all()
+        ]
+    return jsonify(_lead_to_dict(lead, cnt, merged))
 
 @app.route("/api/leads/<int:lid>/status", methods=["PUT"])
 @login_required

@@ -16,6 +16,10 @@ WEIGHT_VALUE         = 1 / 3   # monetary value component
 WEIGHT_CERTIFICATION = 1 / 3   # case strength / cert probability
 WEIGHT_EXPERTISE     = 1 / 3   # firm expertise fit
 
+# An Israeli class action ALREADY filed on this matter is a missed opportunity,
+# not a lead — downrank the composite score by this factor. Tunable.
+ALREADY_FILED_MULTIPLIER = 0.4
+
 # Confidence multiplier applied to the blended score after weighting.
 CONF_MULTIPLIER = {
     "high":   1.0,
@@ -59,6 +63,12 @@ Stage-1 classification hints (use as input; apply independent judgment):
   operates_in_israel: {operates_in_israel}
   israeli_law_basis:  {israeli_law_basis}
 
+Stage-2 legal-analysis context (already computed — use for the score rationale):
+  strength_score (1-10 certification strength): {strength_score}
+  matches_firm_expertise: {matches_expertise}
+  already_filed_in_israel: {already_filed}
+  legal_analysis_summary: {legal_summary}
+
 ━━ STEP 2 — Estimates (ONLY when israel_applicable = true) ━━
 
 class_size_low / class_size_high — plausible range of affected ISRAELI class members.
@@ -90,10 +100,24 @@ the damage-per-member figure. If israel_applicable = false, say so plainly.
 
 If israel_applicable = false: set all numeric fields to null.
 
+━━ STEP 3 — Score rationale (score_reasoning) ━━
+Write a SHORT explanation of the priority score IN HEBREW, by component. Each \
+field is 1–2 concrete sentences, no fluff:
+  summary  — one line: why this score overall.
+  value    — what drove the value estimate (class-size basis, damage basis) and \
+explicitly what is UNKNOWN or assumed.
+  strength — why certification prospects scored as they did: the specific cause \
+of action (עילה), what supports it, and the MAIN legal obstacle.
+  israel   — what makes this applicable (or not) under Israeli law.
+  change   — what specific MISSING information would raise or lower the score.
+If already_filed_in_israel is true, say so in summary — this is a missed \
+opportunity because an Israeli class action was already filed.
+
 Return ONLY valid JSON, no markdown, no surrounding text:
 {{"israel_applicable":true,"class_size_low":N,"class_size_high":N,\
 "damage_per_member_low":N,"damage_per_member_high":N,"confidence":"high|medium|low",\
-"reasoning":"..."}}
+"reasoning":"...",\
+"score_reasoning":{{"summary":"...","value":"...","strength":"...","israel":"...","change":"..."}}}}
 """
 
 
@@ -111,9 +135,15 @@ def estimate_value(lead, client, model: str) -> None:
     safe_hint = hint.replace("{", "{{").replace("}", "}}")
     oii = str(lead.operates_in_israel) if lead.operates_in_israel is not None else "unknown"
     ilb = str(lead.israeli_law_basis or "unknown")
+    legal_summary = (lead.legal_analysis or "")[:1200].replace("{", "{{").replace("}", "}}") or "unknown"
+    strength_score = lead.strength_score if lead.strength_score is not None else "unknown"
+    matches_expertise = str(bool(lead.matches_expertise))
+    already_filed = str(bool(getattr(lead, "already_filed_il", False)))
     prompt = _PROMPT.format(
         text=safe_text, hint=safe_hint,
         operates_in_israel=oii, israeli_law_basis=ilb,
+        strength_score=strength_score, matches_expertise=matches_expertise,
+        already_filed=already_filed, legal_summary=legal_summary,
     )
 
     israel_applicable = None
@@ -121,7 +151,7 @@ def estimate_value(lead, client, model: str) -> None:
     try:
         resp = client.messages.create(
             model=model,
-            max_tokens=600,
+            max_tokens=1100,
             messages=[{"role": "user", "content": prompt}],
         )
         data = _parse_json(resp.content[0].text)
@@ -135,6 +165,16 @@ def estimate_value(lead, client, model: str) -> None:
         reasoning = str(data.get("reasoning", ""))[:500]
         lead.value_confidence = confidence
         lead.value_reasoning  = reasoning
+
+        # Component-by-component score rationale (Hebrew) for the expanded panel
+        sr = data.get("score_reasoning")
+        if isinstance(sr, dict):
+            clean = {
+                k: str(sr.get(k, "") or "")[:600]
+                for k in ("summary", "value", "strength", "israel", "change")
+            }
+            if any(clean.values()):
+                lead.score_reasoning = json.dumps(clean, ensure_ascii=False)
 
         if israel_applicable:
             cs_low  = _f(data.get("class_size_low"))
@@ -221,6 +261,10 @@ def _compute_priority_score(lead, value_high, israel_applicable) -> float:
     # Non-Israeli leads are suppressed — they are not real opportunities for this firm
     if israel_applicable is False:
         score = max(1.0, round(score * 0.3, 1))
+
+    # An Israeli class action already filed on this matter → downrank
+    if getattr(lead, "already_filed_il", False):
+        score = max(1.0, round(score * ALREADY_FILED_MULTIPLIER, 1))
 
     return score
 

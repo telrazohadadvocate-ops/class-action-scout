@@ -12,6 +12,8 @@ import os, sys, json, time, argparse
 os.environ["PYTHONUTF8"] = "1"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import numpy as np
+
 from config.settings import DATABASE_URL, VOYAGE_API_KEY, DEDUP_THRESHOLD
 from database.models import init_database, get_session, Lead
 from analysis.dedup import SemanticDeduplicator
@@ -118,30 +120,51 @@ def main():
         print("Nothing to cluster.")
         return
 
-    canonical = []   # list of (lead, embedding)
     n_unique = 0
     n_duplicates = 0
     duplicate_pairs = []
 
-    for lead in leads:
-        emb = json.loads(lead.embedding) if lead.embedding else []
+    # Only cluster leads that actually have an embedding (Phase 1 may skip some)
+    embedded_leads = [(l, l.embedding) for l in leads if l.embedding]
+    skipped = len(leads) - len(embedded_leads)
+    if skipped:
+        print(f"  ({skipped} leads still have no embedding — left unclustered)")
 
-        match, score = dedup.find_duplicate(emb, canonical)
-        if match:
-            duplicate_pairs.append((lead, match, score))
-            if not args.dry_run:
-                lead.is_duplicate_of_known = True
-                lead.dedup_group_id = match.dedup_group_id or str(match.id)
-                lead.known_case_ref = match.title
-                note = f"🔁 כפילות של ליד #{match.id} (דמיון {score:.0%})"
-                if not lead.notes or note not in lead.notes:
-                    lead.notes = (lead.notes + "\n" if lead.notes else "") + note
-            n_duplicates += 1
-        else:
-            if not args.dry_run:
-                lead.dedup_group_id = str(lead.id)
-            canonical.append((lead, emb))
-            n_unique += 1
+    if embedded_leads:
+        # Vectorized greedy clustering: normalize once, compare each lead against
+        # the growing canonical matrix with a single numpy matvec (BLAS) instead
+        # of a pure-Python O(n²) cosine loop that would hang at this scale.
+        mat = np.asarray([json.loads(e) for _, e in embedded_leads], dtype=np.float32)
+        norms = np.linalg.norm(mat, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-12
+        normed = mat / norms
+
+        canon_mat = np.empty_like(normed)
+        canon_leads = []
+        count = 0
+        for i, (lead, _) in enumerate(embedded_leads):
+            best_s, best_lead = 0.0, None
+            if count:
+                sims = canon_mat[:count] @ normed[i]
+                k = int(sims.argmax())
+                best_s, best_lead = float(sims[k]), canon_leads[k]
+            if best_lead is not None and best_s >= threshold:
+                duplicate_pairs.append((lead, best_lead, best_s))
+                if not args.dry_run:
+                    lead.is_duplicate_of_known = True
+                    lead.dedup_group_id = best_lead.dedup_group_id or str(best_lead.id)
+                    lead.known_case_ref = best_lead.title
+                    note = f"🔁 כפילות של ליד #{best_lead.id} (דמיון {best_s:.0%})"
+                    if not lead.notes or note not in lead.notes:
+                        lead.notes = (lead.notes + "\n" if lead.notes else "") + note
+                n_duplicates += 1
+            else:
+                if not args.dry_run:
+                    lead.dedup_group_id = str(lead.id)
+                canon_mat[count] = normed[i]
+                canon_leads.append(lead)
+                count += 1
+                n_unique += 1
 
     # Summary
     print(f"\n{'─'*60}")

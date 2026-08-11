@@ -682,49 +682,107 @@ a {{ color: #2c5282; }}
             )
             return leads_for_deep
 
-        # Load all previously stored embeddings from DB
+        # Load previously stored embeddings once and build a vectorized index
         existing_with_embs = []
         for db_lead in self.db.query(Lead).filter(Lead.embedding.isnot(None)).all():
             try:
-                emb = json.loads(db_lead.embedding)
-                existing_with_embs.append((db_lead, emb))
+                existing_with_embs.append((db_lead, json.loads(db_lead.embedding)))
             except Exception:
                 pass
+        existing_index = self.deduplicator.build_index(existing_with_embs)
+
+        # Batch-embed ALL new leads up front — one Voyage call per ~100 leads
+        # instead of one call per lead. The previous per-lead calls hit Voyage's
+        # free-tier rate limit (3 RPM); all but the first few threw and were
+        # silently swallowed, which is why 84% of leads ended up unembedded.
+        texts = [
+            f"{(l.company or '')} | {l.title} | {(l.israeli_law_basis or '')}"[:500]
+            for l, _, _ in leads_for_deep
+        ]
+        new_embs = self._embed_batched(texts)
 
         unique = []
-        batch_embs = []  # embeddings of non-duplicate leads in this batch
+        batch_embs = []  # (lead, emb) for non-duplicate leads seen so far this batch
         n_dup = 0
 
-        for lead, item, classification in leads_for_deep:
-            try:
-                emb = self.deduplicator.compute_embedding(
-                    company=lead.company or "",
-                    title=lead.title,
-                    israeli_law_basis=lead.israeli_law_basis or "",
-                )
-                match, score = self.deduplicator.find_duplicate(
-                    emb, existing_with_embs + batch_embs
-                )
-                if match:
-                    lead.is_duplicate_of_known = True
-                    lead.dedup_group_id = match.dedup_group_id or str(match.id)
-                    lead.known_case_ref = match.title
-                    note = f"🔁 כפילות של ליד #{match.id} (דמיון {score:.0%})"
-                    lead.notes = (lead.notes + "\n" if lead.notes else "") + note
-                    n_dup += 1
-                    logger.info(f"  [DEDUP] {lead.title[:45]} ≈ {match.title[:45]} ({score:.0%})")
-                else:
-                    lead.embedding = json.dumps(emb)
-                    lead.dedup_group_id = str(lead.id)
-                    unique.append((lead, item, classification))
-                    batch_embs.append((lead, emb))
-            except Exception as e:
-                logger.warning(f"  [DEDUP] Error for lead {lead.id}: {e}")
+        for (lead, item, classification), emb in zip(leads_for_deep, new_embs):
+            if not emb:
+                # Embedding failed for this lead — keep it, but it stays unclustered
                 unique.append((lead, item, classification))
+                continue
+
+            # Best match against stored leads (vectorized) and this batch (small)
+            candidates = []
+            if existing_index is not None:
+                m, s = self.deduplicator.find_duplicate_indexed(emb, existing_index)
+            else:
+                m, s = self.deduplicator.find_duplicate(emb, existing_with_embs)
+            if m:
+                candidates.append((s, m))
+            mb, sb = self.deduplicator.find_duplicate(emb, batch_embs)
+            if mb:
+                candidates.append((sb, mb))
+
+            if candidates:
+                score, match = max(candidates, key=lambda c: c[0])
+                lead.is_duplicate_of_known = True
+                lead.dedup_group_id = match.dedup_group_id or str(match.id)
+                lead.known_case_ref = match.title
+                note = f"🔁 כפילות של ליד #{match.id} (דמיון {score:.0%})"
+                lead.notes = (lead.notes + "\n" if lead.notes else "") + note
+                n_dup += 1
+                logger.info(f"  [DEDUP] {lead.title[:45]} ≈ {match.title[:45]} ({score:.0%})")
+            else:
+                lead.embedding = json.dumps(emb)
+                lead.dedup_group_id = str(lead.id)
+                unique.append((lead, item, classification))
+                batch_embs.append((lead, emb))
 
         self.db.commit()
-        logger.info(f"Dedup: {len(unique)} unique, {n_dup} duplicates merged")
+        n_embedded = sum(1 for e in new_embs if e)
+        logger.info(
+            f"Dedup: {len(unique)} unique, {n_dup} duplicates merged; "
+            f"embedded {n_embedded}/{len(new_embs)} new leads"
+        )
+        if n_embedded < len(new_embs):
+            logger.warning(
+                f"  ⚠ {len(new_embs) - n_embedded} new leads failed to embed "
+                f"(Voyage error/rate limit) — they remain unclustered"
+            )
         return unique
+
+    def _embed_batched(self, texts: list, chunk: int = 100, max_retries: int = 3) -> list:
+        """
+        Embed texts in chunks with rate-limit retry. Returns a list aligned 1:1
+        with `texts`; any chunk that ultimately fails yields [] for its members
+        (so those leads stay unclustered rather than crashing the scan).
+        """
+        if not texts:
+            return []
+        out = []
+        chunks = [texts[i:i + chunk] for i in range(0, len(texts), chunk)]
+        for ci, ch in enumerate(chunks):
+            embs = [[] for _ in ch]
+            for attempt in range(1, max_retries + 1):
+                try:
+                    embs = self.deduplicator.compute_embeddings_batch(ch)
+                    break
+                except Exception as e:
+                    rate = "ratelimit" in type(e).__name__.lower() or "rate limit" in str(e).lower()
+                    if attempt == max_retries:
+                        logger.warning(f"  [DEDUP] embed chunk failed after {attempt} tries: {e}")
+                        embs = [[] for _ in ch]
+                        break
+                    wait = 15 * attempt
+                    logger.info(
+                        f"  [DEDUP] Voyage {'rate limit' if rate else 'error'}: "
+                        f"retry in {wait}s ({attempt}/{max_retries})"
+                    )
+                    time.sleep(wait)
+            out.extend(embs)
+            if ci < len(chunks) - 1:
+                time.sleep(2)  # small politeness gap between chunks
+        return out
 
     def _check_known_cases(self, lead: Lead) -> bool:
         """

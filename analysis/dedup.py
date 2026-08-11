@@ -7,6 +7,11 @@ wording (e.g. "Dove Sensitive Body Wash" vs "Unilever Dove hypoallergenic").
 import math
 import logging
 
+try:
+    import numpy as _np
+except ImportError:
+    _np = None
+
 logger = logging.getLogger("scout.dedup")
 
 
@@ -71,4 +76,37 @@ class SemanticDeduplicator:
                 best_lead = lead
         if best_score >= self.threshold:
             return best_lead, best_score
+        return None, 0.0
+
+    # ── Vectorized path (numpy) ───────────────────────────────────────────
+    # find_duplicate is O(n) pure Python per call; over thousands of stored
+    # embeddings that is far too slow. build_index precomputes a matrix once,
+    # and find_duplicate_indexed does a single vectorized matvec per query.
+
+    def build_index(self, leads_with_embs: list):
+        """Return (leads, matrix, norms) for fast similarity, or None if numpy
+        is unavailable / the input is empty."""
+        if _np is None or not leads_with_embs:
+            return None
+        leads = [l for l, _ in leads_with_embs]
+        mat = _np.asarray([e for _, e in leads_with_embs], dtype=_np.float32)
+        norms = _np.linalg.norm(mat, axis=1)
+        norms[norms == 0] = 1e-12
+        return (leads, mat, norms)
+
+    def find_duplicate_indexed(self, query_emb: list, index):
+        """Vectorized nearest-neighbour against a prebuilt index. Returns
+        (lead, score) if the best cosine >= threshold, else (None, 0.0)."""
+        if index is None or not query_emb:
+            return None, 0.0
+        leads, mat, norms = index
+        q = _np.asarray(query_emb, dtype=_np.float32)
+        qn = float(_np.linalg.norm(q))
+        if qn == 0:
+            return None, 0.0
+        sims = mat.dot(q) / (norms * qn)
+        i = int(sims.argmax())
+        best = float(sims[i])
+        if best >= self.threshold:
+            return leads[i], best
         return None, 0.0

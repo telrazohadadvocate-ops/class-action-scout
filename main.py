@@ -312,6 +312,19 @@ class ClassActionScout:
         logger.info(f"  Scraped: {len(all_items)} new items")
         logger.info(f"  Analyzed: {len(leads_for_analysis)} leads (after dedup)")
         logger.info(f"  High priority: {len(high_priority)}")
+        # Dedup health — embedded vs total among analysis-eligible canonical leads
+        _elig = self.db.query(Lead).filter(
+            Lead.relevance_score >= MIN_RELEVANCE_SCORE,
+            (Lead.is_duplicate_of_known.is_(None)) | (Lead.is_duplicate_of_known == False),
+        )
+        _elig_total = _elig.count()
+        _elig_embedded = _elig.filter(Lead.embedding.isnot(None)).count()
+        _cov = (_elig_embedded / _elig_total) if _elig_total else 1.0
+        logger.info(f"  Dedup coverage: {_elig_embedded}/{_elig_total} embedded ({_cov:.0%})")
+        if not self.deduplicator.enabled:
+            logger.warning("  ⚠ Dedup DISABLED (no VOYAGE_API_KEY) — new leads are not clustered; duplicates will accumulate")
+        elif _cov < 0.9:
+            logger.warning(f"  ⚠ Dedup coverage {_cov:.0%} < 90% — some eligible leads are unembedded; duplicates may appear")
         logger.info(f"{'='*60}\n")
 
         # Print high-priority leads

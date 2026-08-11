@@ -266,6 +266,7 @@ a{color:inherit;text-decoration:none}
 .tag-src{background:var(--blue-bg);color:var(--blue);border:1px solid rgba(97,175,239,0.15)}
 .tag-na-il{background:var(--surface-3);color:var(--text-dim);border:1px solid var(--border)}
 .tag-filed{background:var(--red-bg);color:var(--red);border:1px solid rgba(224,108,117,0.35);font-weight:600}
+.dedup-banner{align-items:center;gap:9px;padding:10px 14px;margin-bottom:14px;background:var(--red-bg);border:1px solid rgba(224,108,117,0.3);border-radius:8px;color:var(--red);font-size:12.5px;line-height:1.5}
 
 /* ══ VALUE ESTIMATION DISPLAY ══ */
 .lead-value-row{display:flex;align-items:center;gap:5px;margin-top:3px;flex-wrap:wrap}
@@ -591,6 +592,7 @@ a{color:inherit;text-decoration:none}
 
     <!-- ══ LEADS VIEW ══ -->
     <div class="view active" id="view-leads">
+      <div id="dedupBanner" class="dedup-banner" style="display:none" dir="rtl"></div>
       <div class="stats-bar" id="statsBar"></div>
       <div class="toolbar">
         <div class="search-wrap">
@@ -853,9 +855,26 @@ async function loadStats() {
     stats = DEMO_STATS;
   }
   renderStats();
+  renderDedupBanner();
   document.getElementById('nb-leads').textContent = stats.total || 0;
   if (stats.last_run) {
     document.getElementById('lastRun').textContent = new Date(stats.last_run).toLocaleString('he-IL');
+  }
+}
+
+function renderDedupBanner() {
+  const el = document.getElementById('dedupBanner');
+  if (!el) return;
+  // Only surface when the API reported an unhealthy dedup state
+  if (stats.dedup_healthy === false) {
+    const pct = Math.round((stats.dedup_coverage ?? 0) * 100);
+    const cause = stats.dedup_enabled === false
+      ? 'VOYAGE_API_KEY חסר — לידים חדשים אינם עוברים דה-דופליקציה. כפילויות יצטברו.'
+      : `כיסוי הטמעות ${pct}% (מתחת ל-90%) — ייתכנו כפילויות שלא זוהו.`;
+    el.innerHTML = `<span style="font-size:15px">⚠</span><span><strong>דה-דופליקציה מושבתת</strong> — ${cause}</span>`;
+    el.style.display = 'flex';
+  } else {
+    el.style.display = 'none';
   }
 }
 

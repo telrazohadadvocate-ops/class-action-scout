@@ -13,7 +13,10 @@ if sys.platform == "win32":
 from flask import Flask, jsonify, request, send_from_directory, session, redirect, url_for, render_template
 from flask_cors import CORS
 from sqlalchemy import func
-from config.settings import DATABASE_URL, DATABASE_PATH, DASHBOARD_PASSWORD, FLASK_SECRET_KEY
+from config.settings import (
+    DATABASE_URL, DATABASE_PATH, DASHBOARD_PASSWORD, FLASK_SECRET_KEY,
+    VOYAGE_API_KEY, MIN_RELEVANCE_SCORE,
+)
 from database.models import init_database, get_session, Lead, ScrapeLog
 from analysis.value_estimator import nis_bucket
 
@@ -215,6 +218,15 @@ def update_status(lid):
 def get_stats():
     db = get_db()
     last = db.query(ScrapeLog).order_by(ScrapeLog.completed_at.desc()).first()
+    # Dedup health — embedding coverage among analysis-eligible canonical leads
+    elig = db.query(Lead).filter(
+        Lead.relevance_score >= MIN_RELEVANCE_SCORE,
+        (Lead.is_duplicate_of_known.is_(None)) | (Lead.is_duplicate_of_known == False),
+    )
+    elig_total = elig.count()
+    elig_embedded = elig.filter(Lead.embedding.isnot(None)).count()
+    coverage = (elig_embedded / elig_total) if elig_total else 1.0
+    dedup_enabled = bool(VOYAGE_API_KEY)
     return jsonify({
         "total": db.query(Lead).count(),
         "high": db.query(Lead).filter(Lead.priority=="high").count(),
@@ -223,6 +235,10 @@ def get_stats():
         "pursuing": db.query(Lead).filter(Lead.status=="pursuing").count(),
         "duplicates_merged": db.query(Lead).filter(Lead.is_duplicate_of_known==True).count(),
         "last_run": last.completed_at.isoformat() if last and last.completed_at else None,
+        # Dedup health signal for the dashboard banner
+        "dedup_enabled": dedup_enabled,
+        "dedup_coverage": round(coverage, 3),
+        "dedup_healthy": dedup_enabled and coverage >= 0.9,
     })
 
 @app.route("/api/run", methods=["POST"])

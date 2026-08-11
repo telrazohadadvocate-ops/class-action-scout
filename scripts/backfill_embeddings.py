@@ -130,18 +130,41 @@ def main():
     if skipped:
         print(f"  ({skipped} leads still have no embedding — left unclustered)")
 
+    # Seed the canonical index with ALL previously-clustered leads (embedding +
+    # dedup_group_id already set), so a new lead can merge into an EXISTING group
+    # instead of only clustering among the freshly-embedded set.
+    prior_pairs = []
+    for l in (
+        db.query(Lead)
+        .filter(Lead.embedding.isnot(None), Lead.dedup_group_id.isnot(None))
+        .all()
+    ):
+        try:
+            prior_pairs.append((l, json.loads(l.embedding)))
+        except Exception:
+            pass
+    print(f"Seeding index with {len(prior_pairs)} already-clustered leads.")
+
     if embedded_leads:
         # Vectorized greedy clustering: normalize once, compare each lead against
-        # the growing canonical matrix with a single numpy matvec (BLAS) instead
-        # of a pure-Python O(n²) cosine loop that would hang at this scale.
-        mat = np.asarray([json.loads(e) for _, e in embedded_leads], dtype=np.float32)
-        norms = np.linalg.norm(mat, axis=1, keepdims=True)
-        norms[norms == 0] = 1e-12
-        normed = mat / norms
+        # the growing canonical matrix (prior groups + new canonicals) with a
+        # single numpy matvec (BLAS) instead of a pure-Python O(n²) cosine loop.
+        new_mat = np.asarray([json.loads(e) for _, e in embedded_leads], dtype=np.float32)
+        nn = np.linalg.norm(new_mat, axis=1, keepdims=True)
+        nn[nn == 0] = 1e-12
+        normed = new_mat / nn
 
-        canon_mat = np.empty_like(normed)
+        dim = normed.shape[1]
+        canon_mat = np.empty((len(prior_pairs) + len(embedded_leads), dim), dtype=np.float32)
         canon_leads = []
         count = 0
+        if prior_pairs:
+            pm = np.asarray([e for _, e in prior_pairs], dtype=np.float32)
+            pn = np.linalg.norm(pm, axis=1, keepdims=True)
+            pn[pn == 0] = 1e-12
+            canon_mat[:len(prior_pairs)] = pm / pn
+            canon_leads = [l for l, _ in prior_pairs]
+            count = len(prior_pairs)
         for i, (lead, _) in enumerate(embedded_leads):
             best_s, best_lead = 0.0, None
             if count:

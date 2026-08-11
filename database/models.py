@@ -67,6 +67,7 @@ class Lead(Base):
     priority_score = Column(Float)          # 1-10 composite (value+cert+expertise)
     value_confidence = Column(String(10))   # "high" / "medium" / "low"
     value_reasoning = Column(Text)          # brief explanation of the estimate
+    israel_applicable = Column(Boolean)     # True = genuine Israeli nexus confirmed
 
     # Semantic deduplication
     embedding = Column(Text)            # JSON-serialized list[float] from Voyage AI
@@ -147,6 +148,9 @@ def _run_migrations(engine) -> None:
         ("priority_score",       "REAL"),
         ("value_confidence",     "TEXT"),
         ("value_reasoning",      "TEXT"),
+        ("israel_applicable",    "INTEGER"),
+        ("embedding",            "TEXT"),
+        ("dedup_group_id",       "TEXT"),
     ]
     with engine.connect() as conn:
         for col, dtype in new_cols:

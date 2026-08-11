@@ -23,3 +23,6 @@ Thumbs.db
 
 # Ad-hoc output files
 output.txt
+
+# Throwaway SQLite databases from local test/migration runs
+*.db

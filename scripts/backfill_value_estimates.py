@@ -16,7 +16,7 @@ import anthropic
 
 from config.settings import DATABASE_URL, ANTHROPIC_API_KEY, CLAUDE_MODEL
 from database.models import init_database, get_session, Lead
-from analysis.value_estimator import estimate_value
+from analysis.value_estimator import estimate_value, nis_bucket
 
 BATCH_SIZE         = 20   # leads per commit
 SLEEP_BETWEEN_CALLS = 1.0  # seconds between AI calls (politeness)
@@ -72,19 +72,21 @@ def main():
             try:
                 estimate_value(lead, client, CLAUDE_MODEL)
                 # Capture computed values for display before any undo
-                ps_display = lead.priority_score
-                vh_display = lead.value_high
+                ps_display   = lead.priority_score
+                il_display   = lead.israel_applicable
                 conf_display = lead.value_confidence
+                bucket_display = nis_bucket(lead.value_low, lead.value_high)
 
                 if args.dry_run:
                     # Undo writes — DB never touched
                     lead.value_low = lead.value_high = lead.est_class_size = None
                     lead.est_damage_per_member = lead.priority_score = None
                     lead.value_confidence = lead.value_reasoning = None
+                    lead.israel_applicable = None
 
                 done += 1
                 print(f"  [{done}/{total}] #{lead.id} — score={ps_display} "
-                      f"value={vh_display} conf={conf_display}")
+                      f"IL={il_display} conf={conf_display} bucket={bucket_display}")
             except Exception as e:
                 errors += 1
                 print(f"  [{done}/{total}] #{lead.id} ERROR: {e}")

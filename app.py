@@ -15,6 +15,7 @@ from flask_cors import CORS
 from sqlalchemy import func
 from config.settings import DATABASE_URL, DATABASE_PATH, DASHBOARD_PASSWORD, FLASK_SECRET_KEY
 from database.models import init_database, get_session, Lead, ScrapeLog
+from analysis.value_estimator import nis_bucket
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
@@ -59,6 +60,8 @@ def _lead_to_dict(lead, duplicate_count=1):
         "reviewedAt": lead.reviewed_at.isoformat() if lead.reviewed_at else "",
         # Value estimation (rough triage — not legal/financial advice)
         "priorityScore": lead.priority_score,
+        "israelApplicable": lead.israel_applicable,
+        "valueBucket": nis_bucket(lead.value_low, lead.value_high),
         "valueLow": lead.value_low,
         "valueHigh": lead.value_high,
         "estClassSize": lead.est_class_size,

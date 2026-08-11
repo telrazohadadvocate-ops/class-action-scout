@@ -264,6 +264,7 @@ a{color:inherit;text-decoration:none}
 .tag-pacer{background:var(--purple-bg);color:var(--purple);border:1px solid rgba(155,138,251,0.15)}
 .tag-new{background:var(--indigo-glow);color:var(--indigo);border:1px solid rgba(94,106,210,0.2)}
 .tag-src{background:var(--blue-bg);color:var(--blue);border:1px solid rgba(97,175,239,0.15)}
+.tag-na-il{background:var(--surface-3);color:var(--text-dim);border:1px solid var(--border)}
 
 /* ══ VALUE ESTIMATION DISPLAY ══ */
 .lead-value-row{display:flex;align-items:center;gap:5px;margin-top:3px;flex-wrap:wrap}
@@ -931,13 +932,11 @@ function fmtNis(v) {
 }
 
 function buildValueBadge(l) {
-  if (!l.valueLow && !l.valueHigh) return '';
-  const lo = fmtNis(l.valueLow), hi = fmtNis(l.valueHigh);
-  const range = (lo && hi) ? lo + '–' + hi : (hi || lo || '');
+  if (!l.valueBucket) return '';
   const confMap = {high:{label:'גבוה',cls:'conf-high'},medium:{label:'בינוני',cls:'conf-medium'},low:{label:'נמוך',cls:'conf-low'}};
-  const conf = confMap[l.valueConfidence] || confMap.low;
+  const conf = confMap[l.valueConfidence] || confMap.medium;
   const tip = (l.valueReasoning || '').replace(/"/g, '&quot;').replace(/\n/g, ' ');
-  return `<div class="lead-value-row" title="${tip}"><span class="value-range">${range}</span><span class="value-est-label">הערכה גסה לתעדוף</span><span class="value-conf ${conf.cls}">${conf.label}</span></div>`;
+  return `<div class="lead-value-row" title="${tip}"><span class="value-range">${l.valueBucket}</span><span class="value-est-label">הערכה גסה לתעדוף</span><span class="value-conf ${conf.cls}">${conf.label}</span></div>`;
 }
 
 function renderLeads() {
@@ -958,6 +957,7 @@ function buildLeadCard(l) {
   if (l.pinkasExists) tags += '<span class="tag tag-pin">פנקס</span>';
   if ((l.notes||'').includes('PACER')) tags += '<span class="tag tag-pacer">PACER</span>';
   if (l.status === 'new') tags += '<span class="tag tag-new">חדש</span>';
+  if (l.israelApplicable === false) tags += '<span class="tag tag-na-il">לא ישים בישראל</span>';
 
   let detail = '';
   if (isOpen) {
@@ -980,23 +980,21 @@ function buildLeadCard(l) {
       </div>
       ${l.legalAnalysis?`<div class="detail-panel"><div class="detail-panel-head ph-legal"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><circle cx="5" cy="5" r="4.5"/></svg> ניתוח משפטי</div>${l.legalAnalysis}</div>`:''}
       ${l.recommendedAction?`<div class="detail-panel panel-action"><div class="detail-panel-head ph-action"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><polygon points="1,1 9,5 1,9"/></svg> המלצת פעולה</div>${l.recommendedAction}</div>`:''}
-      ${(l.valueLow||l.valueHigh)?(() => {
-        const lo=fmtNis(l.valueLow),hi=fmtNis(l.valueHigh);
-        const range=(lo&&hi)?lo+'–'+hi:(hi||lo||'—');
+      ${(l.priorityScore!=null||l.valueBucket||l.valueReasoning)?(() => {
         const confMap={high:{label:'גבוה',cls:'conf-high'},medium:{label:'בינוני',cls:'conf-medium'},low:{label:'נמוך',cls:'conf-low'}};
         const conf=confMap[l.valueConfidence]||confMap.low;
-        const csText=l.estClassSize?'~'+l.estClassSize.toLocaleString()+' חברי קבוצה':'—';
-        const dmText=l.estDamagePerMember?fmtNis(l.estDamagePerMember)+'/חבר':'—';
+        const csText=l.estClassSize?'~'+l.estClassSize.toLocaleString()+' חברי קבוצה':'';
+        const dmText=l.estDamagePerMember?'₪'+Math.round(l.estDamagePerMember).toLocaleString()+'/חבר':'';
         return `<div class="detail-panel panel-value">
           <div class="detail-panel-head ph-value">
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"/><path d="M5 2v6M3 4h3.5M3 6h3.5"/></svg>
-            הערכת שווי — <span class="value-conf ${conf.cls}" style="margin-inline-start:4px">${conf.label}</span>
+            הערכת עדיפות${l.valueBucket?` — <span class="value-conf ${conf.cls}" style="margin-inline-start:4px">${conf.label}</span>`:''}
           </div>
           <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:6px">
-            <div><div class="dg-label">טווח שווי כולל</div><div style="font-family:var(--font-mono);font-size:14px;font-weight:600;color:var(--amber)">${range}</div></div>
-            <div><div class="dg-label">גודל קבוצה מוערך</div><div style="font-size:12px;color:var(--text)">${csText}</div></div>
-            <div><div class="dg-label">נזק לחבר</div><div style="font-size:12px;color:var(--text)">${dmText}</div></div>
             ${l.priorityScore!=null?`<div><div class="dg-label">ציון עדיפות</div><div style="font-family:var(--font-mono);font-size:14px;font-weight:600;color:var(--indigo)">${l.priorityScore}/10</div></div>`:''}
+            ${l.valueBucket?`<div><div class="dg-label">שווי מוערך</div><div style="font-family:var(--font-mono);font-size:14px;font-weight:600;color:var(--amber)">${l.valueBucket}</div></div>`:''}
+            ${l.valueBucket&&csText?`<div><div class="dg-label">גודל קבוצה מוערך</div><div style="font-size:12px;color:var(--text)">${csText}</div></div>`:''}
+            ${l.valueBucket&&dmText?`<div><div class="dg-label">נזק לחבר</div><div style="font-size:12px;color:var(--text)">${dmText}</div></div>`:''}
           </div>
           ${l.valueReasoning?`<div style="font-size:11.5px;color:var(--text-secondary);line-height:1.6">${l.valueReasoning}</div>`:''}
           <div class="value-disclaimer">⚠ הערכה גסה לצורכי תעדוף בלבד — אינה ייעוץ משפטי או פיננסי</div>

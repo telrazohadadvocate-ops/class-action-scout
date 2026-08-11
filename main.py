@@ -35,7 +35,7 @@ from config.settings import (
     ANTHROPIC_API_KEY, CLAUDE_MODEL, DATABASE_URL, DATABASE_PATH,
     MIN_RELEVANCE_SCORE, HIGH_PRIORITY_THRESHOLD,
     SCRAPE_DELAY_SECONDS, SOURCES, FIRM_EXPERTISE, KNOWN_CASES,
-    VOYAGE_API_KEY, DEDUP_THRESHOLD,
+    VOYAGE_API_KEY, DEDUP_THRESHOLD, AUTO_MERGE_THRESHOLD, REVIEW_THRESHOLD,
 )
 from database.models import init_database, get_session, Lead, RawSource, ScrapeLog
 from scrapers.scrapers import build_scrapers
@@ -60,7 +60,9 @@ class ClassActionScout:
 
         self.pinkas = PinkasChecker()
         self.scrapers = build_scrapers(SOURCES, SCRAPE_DELAY_SECONDS)
-        self.deduplicator = SemanticDeduplicator(api_key=VOYAGE_API_KEY, threshold=DEDUP_THRESHOLD)
+        # Base threshold = REVIEW (0.82); the pipeline tiers matches above it into
+        # auto-merge (>= AUTO_MERGE) vs suspected-duplicate review [REVIEW, AUTO).
+        self.deduplicator = SemanticDeduplicator(api_key=VOYAGE_API_KEY, threshold=REVIEW_THRESHOLD)
         logger.info(f"Ready. Scrapers: {list(self.scrapers.keys())}")
 
     # ── Full pipeline ──────────────────────────────────
@@ -704,6 +706,7 @@ a {{ color: #2c5282; }}
         unique = []
         batch_embs = []  # (lead, emb) for non-duplicate leads seen so far this batch
         n_dup = 0
+        n_review = 0
 
         for (lead, item, classification), emb in zip(leads_for_deep, new_embs):
             if not emb:
@@ -711,7 +714,9 @@ a {{ color: #2c5282; }}
                 unique.append((lead, item, classification))
                 continue
 
-            # Best match against stored leads (vectorized) and this batch (small)
+            # Best match against stored leads (vectorized) and this batch (small).
+            # deduplicator.threshold == REVIEW_THRESHOLD, so a match is returned
+            # for any similarity >= REVIEW; we tier it below.
             candidates = []
             if existing_index is not None:
                 m, s = self.deduplicator.find_duplicate_indexed(emb, existing_index)
@@ -722,16 +727,28 @@ a {{ color: #2c5282; }}
             mb, sb = self.deduplicator.find_duplicate(emb, batch_embs)
             if mb:
                 candidates.append((sb, mb))
+            score, match = max(candidates, key=lambda c: c[0]) if candidates else (0.0, None)
 
-            if candidates:
-                score, match = max(candidates, key=lambda c: c[0])
+            if match is not None and score >= AUTO_MERGE_THRESHOLD:
+                # High confidence — auto-merge
                 lead.is_duplicate_of_known = True
                 lead.dedup_group_id = match.dedup_group_id or str(match.id)
                 lead.known_case_ref = match.title
                 note = f"🔁 כפילות של ליד #{match.id} (דמיון {score:.0%})"
                 lead.notes = (lead.notes + "\n" if lead.notes else "") + note
                 n_dup += 1
-                logger.info(f"  [DEDUP] {lead.title[:45]} ≈ {match.title[:45]} ({score:.0%})")
+                logger.info(f"  [DEDUP] merge {lead.title[:40]} ≈ {match.title[:40]} ({score:.0%})")
+            elif match is not None and score >= REVIEW_THRESHOLD:
+                # Borderline — keep as its own lead but flag for manual review
+                lead.embedding = json.dumps(emb)
+                lead.dedup_group_id = str(lead.id)
+                lead.suspected_dup_of = match.id
+                lead.suspected_dup_score = round(score, 4)
+                lead.dup_review = "pending"
+                unique.append((lead, item, classification))
+                batch_embs.append((lead, emb))
+                n_review += 1
+                logger.info(f"  [DEDUP] review {lead.title[:40]} ≈ {match.title[:40]} ({score:.0%})")
             else:
                 lead.embedding = json.dumps(emb)
                 lead.dedup_group_id = str(lead.id)
@@ -741,7 +758,7 @@ a {{ color: #2c5282; }}
         self.db.commit()
         n_embedded = sum(1 for e in new_embs if e)
         logger.info(
-            f"Dedup: {len(unique)} unique, {n_dup} duplicates merged; "
+            f"Dedup: {len(unique)} unique, {n_dup} auto-merged, {n_review} flagged for review; "
             f"embedded {n_embedded}/{len(new_embs)} new leads"
         )
         if n_embedded < len(new_embs):

@@ -40,7 +40,7 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated
 
-def _lead_to_dict(lead, duplicate_count=1, merged_sources=None):
+def _lead_to_dict(lead, duplicate_count=1, merged_sources=None, suspected_title=None):
     return {
         "id": lead.id, "title": lead.title, "company": lead.company or "",
         "sector": lead.sector or "", "source": lead.source_name,
@@ -77,6 +77,11 @@ def _lead_to_dict(lead, duplicate_count=1, merged_sources=None):
         "relevanceReasoning": lead.relevance_reasoning or "",
         "scoreReasoning": _parse_score_reasoning(lead.score_reasoning),
         "mergedSources": merged_sources or [],
+        # Suspected-duplicate review
+        "suspectedDupOf": lead.suspected_dup_of,
+        "suspectedDupScore": lead.suspected_dup_score,
+        "dupReview": lead.dup_review or "",
+        "suspectedMatchTitle": suspected_title or "",
     }
 
 
@@ -146,6 +151,9 @@ def get_leads():
     # Hide leads where an Israeli class action was already filed
     if request.args.get("hide_filed", "false").lower() == "true":
         q = q.filter((Lead.already_filed_il == False) | Lead.already_filed_il.is_(None))
+    # Show only leads flagged as suspected duplicates awaiting review
+    if request.args.get("review", "").lower() == "pending":
+        q = q.filter(Lead.dup_review == "pending")
     search = request.args.get("search", "")
     if search:
         like = f"%{search}%"
@@ -178,8 +186,17 @@ def get_leads():
             merged_map.setdefault(gid, []).append(
                 {"title": title, "source": sname or "", "url": surl or ""}
             )
+    # Titles for suspected-duplicate matches shown on flagged leads
+    susp_ids = [l.suspected_dup_of for l in leads if l.suspected_dup_of and (l.dup_review or "") == "pending"]
+    susp_titles = {}
+    if susp_ids:
+        for sid, stitle in db.query(Lead.id, Lead.title).filter(Lead.id.in_(set(susp_ids))).all():
+            susp_titles[sid] = stitle
     return jsonify({"total": total, "leads": [
-        _lead_to_dict(l, group_counts.get(l.dedup_group_id, 1), merged_map.get(l.dedup_group_id))
+        _lead_to_dict(
+            l, group_counts.get(l.dedup_group_id, 1), merged_map.get(l.dedup_group_id),
+            susp_titles.get(l.suspected_dup_of),
+        )
         for l in leads
     ]})
 
@@ -213,6 +230,31 @@ def update_status(lid):
     cnt = db.query(func.count(Lead.id)).filter(Lead.dedup_group_id == lead.dedup_group_id).scalar() if lead.dedup_group_id else 1
     return jsonify(_lead_to_dict(lead, cnt))
 
+@app.route("/api/leads/<int:lid>/resolve-duplicate", methods=["POST"])
+@login_required
+def resolve_duplicate(lid):
+    db = get_db()
+    lead = db.query(Lead).get(lid)
+    if not lead:
+        return jsonify({"error": "not found"}), 404
+    action = (request.json or {}).get("action")
+    if action == "merge":
+        match = db.query(Lead).get(lead.suspected_dup_of) if lead.suspected_dup_of else None
+        if not match:
+            return jsonify({"error": "no suspected match to merge into"}), 400
+        lead.is_duplicate_of_known = True
+        lead.dedup_group_id = match.dedup_group_id or str(match.id)
+        lead.known_case_ref = match.title
+        lead.dup_review = "merged"
+    elif action == "separate":
+        # Keep it as its own lead; record the decision so it won't re-flag
+        lead.dup_review = "separate"
+    else:
+        return jsonify({"error": "action must be 'merge' or 'separate'"}), 400
+    db.commit()
+    return jsonify({"status": "ok", "dupReview": lead.dup_review})
+
+
 @app.route("/api/stats")
 @login_required
 def get_stats():
@@ -234,6 +276,7 @@ def get_stats():
         "new": db.query(Lead).filter(Lead.status=="new").count(),
         "pursuing": db.query(Lead).filter(Lead.status=="pursuing").count(),
         "duplicates_merged": db.query(Lead).filter(Lead.is_duplicate_of_known==True).count(),
+        "pending_review": db.query(Lead).filter(Lead.dup_review=="pending").count(),
         "last_run": last.completed_at.isoformat() if last and last.completed_at else None,
         # Dedup health signal for the dashboard banner
         "dedup_enabled": dedup_enabled,

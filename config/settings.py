@@ -41,7 +41,15 @@ FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY") or _secrets.token_hex(32)
 
 # ── Semantic deduplication ─────────────────────────────
 VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY", "")
-DEDUP_THRESHOLD = float(os.getenv("DEDUP_THRESHOLD", "0.85"))
+DEDUP_THRESHOLD = float(os.getenv("DEDUP_THRESHOLD", "0.85"))  # legacy single threshold
+
+# Two-tier dedup. Above AUTO_MERGE → treat as a duplicate automatically. In the
+# borderline band [REVIEW, AUTO) → flag as a SUSPECTED duplicate for manual
+# review instead of silently merging (same company / different lawsuit lives
+# here). Below REVIEW → unrelated. A visible duplicate costs seconds; a silently
+# merged distinct case loses a lead — so we err toward review.
+AUTO_MERGE_THRESHOLD = float(os.getenv("AUTO_MERGE_THRESHOLD", "0.87"))
+REVIEW_THRESHOLD = float(os.getenv("REVIEW_THRESHOLD", "0.82"))
 
 # ── API Keys (set via env vars or .env file) ───────────
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")

@@ -266,6 +266,7 @@ a{color:inherit;text-decoration:none}
 .tag-src{background:var(--blue-bg);color:var(--blue);border:1px solid rgba(97,175,239,0.15)}
 .tag-na-il{background:var(--surface-3);color:var(--text-dim);border:1px solid var(--border)}
 .tag-filed{background:var(--red-bg);color:var(--red);border:1px solid rgba(224,108,117,0.35);font-weight:600}
+.tag-review{background:var(--amber-bg);color:var(--amber);border:1px solid rgba(212,164,76,0.35);font-weight:600}
 .dedup-banner{align-items:center;gap:9px;padding:10px 14px;margin-bottom:14px;background:var(--red-bg);border:1px solid rgba(224,108,117,0.3);border-radius:8px;color:var(--red);font-size:12.5px;line-height:1.5}
 
 /* ══ VALUE ESTIMATION DISPLAY ══ */
@@ -308,6 +309,8 @@ a{color:inherit;text-decoration:none}
 .detail-panel.panel-action{border-color:rgba(94,106,210,0.15);background:linear-gradient(135deg,rgba(94,106,210,0.04),transparent)}
 .detail-panel.panel-reason{border-color:rgba(78,201,160,0.15);background:linear-gradient(135deg,rgba(78,201,160,0.04),transparent)}
 .detail-panel.panel-filed{border-color:rgba(224,108,117,0.25);background:linear-gradient(135deg,rgba(224,108,117,0.06),transparent)}
+.ph-review{color:var(--amber)}
+.detail-panel.panel-review{border-color:rgba(212,164,76,0.28);background:linear-gradient(135deg,rgba(212,164,76,0.07),transparent)}
 .detail-actions{display:flex;gap:6px;flex-wrap:wrap;padding-top:4px}
 .status-btn{
   padding:5px 13px;font-size:10px;font-weight:600;letter-spacing:0.03em;
@@ -632,6 +635,10 @@ a{color:inherit;text-decoration:none}
           <button class="toggle" id="hideFiledToggle" style="pointer-events:none"></button>
           <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap">הסתר שהוגשו</span>
         </span>
+        <span id="reviewChip" style="display:none;align-items:center;gap:6px;cursor:pointer;flex-shrink:0" onclick="document.getElementById('reviewToggle').classList.toggle('on');loadLeads()">
+          <button class="toggle" id="reviewToggle" style="pointer-events:none"></button>
+          <span style="font-size:11px;color:var(--amber);white-space:nowrap">כפילויות לבדיקה (<span id="reviewCount">0</span>)</span>
+        </span>
         <div class="view-toggle">
           <button class="vt-btn active" id="vt-list" title="רשימה" onclick="setListMode('list')">
             <svg viewBox="0 0 14 14"><line x1="1" y1="3" x2="13" y2="3" stroke-width="1.5"/><line x1="1" y1="7" x2="13" y2="7" stroke-width="1.5"/><line x1="1" y1="11" x2="13" y2="11" stroke-width="1.5"/></svg>
@@ -856,6 +863,7 @@ async function loadStats() {
   }
   renderStats();
   renderDedupBanner();
+  updateReviewChip();
   document.getElementById('nb-leads').textContent = stats.total || 0;
   if (stats.last_run) {
     document.getElementById('lastRun').textContent = new Date(stats.last_run).toLocaleString('he-IL');
@@ -887,6 +895,7 @@ async function loadLeads() {
     period: document.getElementById('ft').value,
     hide_duplicates: document.getElementById('hideDupToggle').classList.contains('on'),
     hide_filed: document.getElementById('hideFiledToggle').classList.contains('on'),
+    review: document.getElementById('reviewToggle').classList.contains('on') ? 'pending' : '',
     limit: 100
   });
   try {
@@ -1003,6 +1012,7 @@ function buildLeadCard(l) {
   let tags = '';
   if (l.matchesExpertise) tags += `<span class="tag tag-ex">${(l.expertiseArea||'').split('/')[0].trim()||'מומחיות'}</span>`;
   if (l.alreadyFiledIl) tags += '<span class="tag tag-filed">כבר הוגשה ייצוגית בישראל</span>';
+  if (l.dupReview === 'pending') tags += '<span class="tag tag-review">כפילות אפשרית</span>';
   if (l.isDuplicate) tags += '<span class="tag tag-dup">תיק קיים</span>';
   if (!l.isDuplicate && l.duplicateCount > 1) tags += `<span class="tag tag-src">${l.duplicateCount} מקורות</span>`;
   if (l.pinkasExists) tags += '<span class="tag tag-pin">פנקס</span>';
@@ -1029,6 +1039,14 @@ function buildLeadCard(l) {
         <div class="dg-item"><span class="dg-label">סקטור</span><span class="dg-value">${l.sector||'—'}</span></div>
         <div class="dg-item"><span class="dg-label">מקור</span><span class="dg-value">${l.source||'—'}</span></div>
       </div>
+      ${l.dupReview==='pending'?`<div class="detail-panel panel-review">
+        <div class="detail-panel-head ph-review"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 1L1 9h8z"/><line x1="5" y1="4" x2="5" y2="6.5"/></svg> כפילות אפשרית — דרושה בדיקה</div>
+        <div style="color:var(--text-secondary);line-height:1.6;margin-bottom:9px">דומה לליד <strong>#${l.suspectedDupOf}</strong>${l.suspectedMatchTitle?` — "${(l.suspectedMatchTitle||'').replace(/</g,'&lt;')}"`:''} (דמיון ${Math.round((l.suspectedDupScore||0)*100)}%). אותה תובענה, או תיק אחר של אותה חברה?</div>
+        <div style="display:flex;gap:8px">
+          <button class="status-btn" style="color:var(--red);border-color:var(--red)" onclick="event.stopPropagation();resolveDup(${l.id},'merge')">מזג ככפילות</button>
+          <button class="status-btn" style="color:var(--green);border-color:var(--green)" onclick="event.stopPropagation();resolveDup(${l.id},'separate')">השאר בנפרד</button>
+        </div>
+      </div>`:''}
       ${l.legalAnalysis?`<div class="detail-panel"><div class="detail-panel-head ph-legal"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><circle cx="5" cy="5" r="4.5"/></svg> ניתוח משפטי</div>${l.legalAnalysis}</div>`:''}
       ${l.recommendedAction?`<div class="detail-panel panel-action"><div class="detail-panel-head ph-action"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><polygon points="1,1 9,5 1,9"/></svg> המלצת פעולה</div>${l.recommendedAction}</div>`:''}
       ${(l.priorityScore!=null||l.valueBucket||l.valueReasoning)?(() => {
@@ -1088,6 +1106,27 @@ function buildLeadCard(l) {
 function toggleLead(id) {
   expandedId = expandedId === id ? null : id;
   renderLeads();
+}
+
+function updateReviewChip() {
+  const chip = document.getElementById('reviewChip');
+  if (!chip) return;
+  const n = stats.pending_review || 0;
+  document.getElementById('reviewCount').textContent = n;
+  chip.style.display = n > 0 ? 'flex' : 'none';
+  if (n === 0) document.getElementById('reviewToggle').classList.remove('on');
+}
+
+async function resolveDup(id, action) {
+  try {
+    await fetch('/api/leads/' + id + '/resolve-duplicate', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action})
+    });
+  } catch {}
+  expandedId = null;
+  await loadStats();
+  await loadLeads();
 }
 
 async function setStatus(id, s) {

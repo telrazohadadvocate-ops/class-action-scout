@@ -77,6 +77,12 @@ class Lead(Base):
     # Composite score rationale — JSON {summary,value,strength,israel,change}
     score_reasoning = Column(Text)
 
+    # Suspected-duplicate review — borderline similarity [REVIEW, AUTO) is flagged
+    # for a human call rather than auto-merged (same company / different lawsuit).
+    suspected_dup_of = Column(Integer)      # id of the lead this may duplicate
+    suspected_dup_score = Column(Float)     # cosine similarity to that lead
+    dup_review = Column(String(20))         # None / "pending" / "merged" / "separate"
+
     # Semantic deduplication
     embedding = Column(Text)            # JSON-serialized list[float] from Voyage AI
     dedup_group_id = Column(String(50)) # str(canonical_lead.id) for the cluster
@@ -160,6 +166,9 @@ def _run_migrations(engine) -> None:
         ("already_filed_il",     "INTEGER"),
         ("already_filed_details","TEXT"),
         ("score_reasoning",      "TEXT"),
+        ("suspected_dup_of",     "INTEGER"),
+        ("suspected_dup_score",  "REAL"),
+        ("dup_review",           "TEXT"),
         ("embedding",            "TEXT"),
         ("dedup_group_id",       "TEXT"),
     ]

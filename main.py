@@ -40,7 +40,7 @@ from config.settings import (
 from database.models import init_database, get_session, Lead, RawSource, ScrapeLog
 from scrapers.scrapers import build_scrapers
 from analysis.claude_analyzer import ClaudeAnalyzer
-from analysis.dedup import SemanticDeduplicator
+from analysis.dedup import SemanticDeduplicator, title_match_key
 from registry.pinkas_checker import PinkasChecker
 
 
@@ -693,6 +693,17 @@ a {{ color: #2c5282; }}
                 pass
         existing_index = self.deduplicator.build_index(existing_with_embs)
 
+        # Exact-title index over existing canonical leads. Deliberately NOT
+        # restricted to embedded leads: the title rule is decided on text, so an
+        # unembedded canonical can still absorb an identical repost.
+        title_index = {}
+        for db_lead in self.db.query(Lead).filter(
+            (Lead.is_duplicate_of_known.is_(None)) | (Lead.is_duplicate_of_known == False)
+        ).all():
+            k = title_match_key(db_lead.title, db_lead.company)
+            if k and k not in title_index:
+                title_index[k] = db_lead
+
         # Batch-embed ALL new leads up front — one Voyage call per ~100 leads
         # instead of one call per lead. The previous per-lead calls hit Voyage's
         # free-tier rate limit (3 RPM); all but the first few threw and were
@@ -706,9 +717,31 @@ a {{ color: #2c5282; }}
         unique = []
         batch_embs = []  # (lead, emb) for non-duplicate leads seen so far this batch
         n_dup = 0
+        n_dup_title = 0
         n_review = 0
 
         for (lead, item, classification), emb in zip(leads_for_deep, new_embs):
+            # Tier 0 — same headline, same company. Checked before the embedding
+            # tiers (and before the no-embedding bail-out) because it is decided
+            # on the text itself. The embedding text is
+            # "company | title | israeli_law_basis", so an identical title whose
+            # law-basis wording differs scores below AUTO_MERGE and would
+            # otherwise land in the manual review queue.
+            tkey = title_match_key(lead.title, lead.company)
+            tmatch = title_index.get(tkey) if tkey else None
+            if tmatch is not None:
+                lead.is_duplicate_of_known = True
+                lead.dedup_group_id = tmatch.dedup_group_id or str(tmatch.id)
+                lead.known_case_ref = tmatch.title
+                if emb:
+                    lead.embedding = json.dumps(emb)
+                note = f"🔁 כפילות של ליד #{tmatch.id} (כותרת זהה)"
+                lead.notes = (lead.notes + "\n" if lead.notes else "") + note
+                n_dup += 1
+                n_dup_title += 1
+                logger.info(f"  [DEDUP] merge-title {lead.title[:40]} = #{tmatch.id}")
+                continue
+
             if not emb:
                 # Embedding failed for this lead — keep it, but it stays unclustered
                 unique.append((lead, item, classification))
@@ -747,6 +780,8 @@ a {{ color: #2c5282; }}
                 lead.dup_review = "pending"
                 unique.append((lead, item, classification))
                 batch_embs.append((lead, emb))
+                if tkey and tkey not in title_index:
+                    title_index[tkey] = lead
                 n_review += 1
                 logger.info(f"  [DEDUP] review {lead.title[:40]} ≈ {match.title[:40]} ({score:.0%})")
             else:
@@ -754,11 +789,15 @@ a {{ color: #2c5282; }}
                 lead.dedup_group_id = str(lead.id)
                 unique.append((lead, item, classification))
                 batch_embs.append((lead, emb))
+                if tkey and tkey not in title_index:
+                    title_index[tkey] = lead
 
         self.db.commit()
         n_embedded = sum(1 for e in new_embs if e)
         logger.info(
-            f"Dedup: {len(unique)} unique, {n_dup} auto-merged, {n_review} flagged for review; "
+            f"Dedup: {len(unique)} unique, {n_dup} auto-merged "
+            f"({n_dup_title} by identical title, {n_dup - n_dup_title} by embedding), "
+            f"{n_review} flagged for review; "
             f"embedded {n_embedded}/{len(new_embs)} new leads"
         )
         if n_embedded < len(new_embs):

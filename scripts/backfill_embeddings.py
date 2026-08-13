@@ -7,10 +7,11 @@ Usage:
                                         [--review-threshold R] [--auto-threshold A]
 
 Phase 1 — Embed leads where embedding IS NULL (resumable, rate-limited for free tier).
-Phase 2 — Two-tier clustering:
-            similarity >= auto   → auto-merge (duplicate, hidden by default)
-            [review, auto)       → flag as SUSPECTED duplicate (dup_review="pending")
-            < review             → canonical (unique)
+Phase 2 — Clustering:
+            identical title+company → auto-merge (any score; checked first)
+            similarity >= auto      → auto-merge (duplicate, hidden by default)
+            [review, auto)          → flag as SUSPECTED duplicate (dup_review="pending")
+            < review                → canonical (unique)
   --recluster re-clusters ALL embedded leads from scratch under the current
   thresholds (use after changing REVIEW/AUTO) and reports merge vs flag counts.
   Leads a human already resolved (dup_review "merged" or "separate") are held
@@ -27,7 +28,7 @@ from config.settings import (
     DATABASE_URL, VOYAGE_API_KEY, REVIEW_THRESHOLD, AUTO_MERGE_THRESHOLD,
 )
 from database.models import init_database, get_session, Lead
-from analysis.dedup import SemanticDeduplicator
+from analysis.dedup import SemanticDeduplicator, title_match_key
 
 BATCH_SIZE = 100            # max texts per Voyage API call (free tier allows up to 128)
 TEXT_MAX_CHARS = 500        # truncate each lead's text to stay well under 10K TPM
@@ -56,21 +57,47 @@ def embed_with_retry(dedup, texts):
     return []  # unreachable
 
 
+def manually_separated(lead, other):
+    """
+    True if a human explicitly ruled these two leads apart in the dashboard.
+
+    Identical headlines are normally the same lawsuit, but "keep separate" is a
+    judgment already made about this exact pair — the title rule must not
+    silently reverse it. Preserved leads keep their dup_review/suspected_dup_of,
+    so the decision is still readable here.
+    """
+    return ((other.dup_review == "separate" and other.suspected_dup_of == lead.id)
+            or (lead.dup_review == "separate" and lead.suspected_dup_of == other.id))
+
+
 def cluster_leads(embedded_leads, seed_pairs, auto_thr, review_thr, dry_run):
     """
-    Greedy, vectorized, two-tier clustering.
+    Greedy, vectorized clustering with an exact-title rule ahead of two tiers.
 
     embedded_leads: [(lead, emb_list)] to assign (in id order).
     seed_pairs:     [(lead, emb_list)] already-canonical, to seed the index.
 
+    Tier 0 — identical normalized full title AND company → merge, any score.
+    Tier 1 — cosine >= auto_thr                          → merge.
+    Tier 2 — cosine in [review_thr, auto_thr)            → flag for review.
+
     Mutates each lead (unless dry_run): dedup_group_id, is_duplicate_of_known,
     known_case_ref, suspected_dup_of, suspected_dup_score, dup_review.
-    Returns dict(merged, review, unique, merge_pairs, review_pairs).
+    Returns dict(merged, merged_title, merged_emb, review, unique, ...pairs).
     """
-    n_merged = n_review = n_unique = 0
-    merge_pairs, review_pairs = [], []
+    n_merged_title = n_merged_emb = n_review = n_unique = 0
+    merge_pairs, title_pairs, review_pairs = [], [], []
     if not embedded_leads:
-        return dict(merged=0, review=0, unique=0, merge_pairs=[], review_pairs=[])
+        return dict(merged=0, merged_title=0, merged_emb=0, review=0, unique=0,
+                    merge_pairs=[], title_pairs=[], review_pairs=[])
+
+    # Exact-title index over canonical leads only — duplicates stay out, exactly
+    # like the embedding index below. First canonical to claim a key keeps it.
+    title_index = {}
+    for l, _ in seed_pairs:
+        k = title_match_key(l.title, l.company)
+        if k and k not in title_index:
+            title_index[k] = l
 
     new_mat = np.asarray([e for _, e in embedded_leads], dtype=np.float32)
     nn = np.linalg.norm(new_mat, axis=1, keepdims=True)
@@ -96,7 +123,27 @@ def cluster_leads(embedded_leads, seed_pairs, auto_thr, review_thr, dry_run):
             k = int(sims.argmax())
             best_s, best_lead = float(sims[k]), canon_leads[k]
 
-        if best_lead is not None and best_s >= auto_thr:
+        tkey = title_match_key(lead.title, lead.company)
+        tmatch = title_index.get(tkey) if tkey else None
+        if tmatch is not None and manually_separated(lead, tmatch):
+            tmatch = None   # human already ruled this pair apart
+
+        if tmatch is not None:
+            # Tier 0 — same headline, same company. Decided on the text itself;
+            # the embedding score is not consulted.
+            title_pairs.append((lead, tmatch, best_s))
+            if not dry_run:
+                lead.is_duplicate_of_known = True
+                lead.dedup_group_id = tmatch.dedup_group_id or str(tmatch.id)
+                lead.known_case_ref = tmatch.title
+                lead.suspected_dup_of = None
+                lead.suspected_dup_score = None
+                lead.dup_review = None
+                note = f"🔁 כפילות של ליד #{tmatch.id} (כותרת זהה)"
+                if not lead.notes or note not in lead.notes:
+                    lead.notes = (lead.notes + "\n" if lead.notes else "") + note
+            n_merged_title += 1
+        elif best_lead is not None and best_s >= auto_thr:
             # High confidence — auto-merge (do NOT add to the canonical index)
             merge_pairs.append((lead, best_lead, best_s))
             if not dry_run:
@@ -109,7 +156,7 @@ def cluster_leads(embedded_leads, seed_pairs, auto_thr, review_thr, dry_run):
                 note = f"🔁 כפילות של ליד #{best_lead.id} (דמיון {best_s:.0%})"
                 if not lead.notes or note not in lead.notes:
                     lead.notes = (lead.notes + "\n" if lead.notes else "") + note
-            n_merged += 1
+            n_merged_emb += 1
         elif best_lead is not None and best_s >= review_thr:
             # Borderline — keep as its own canonical, but flag for manual review
             review_pairs.append((lead, best_lead, best_s))
@@ -123,6 +170,8 @@ def cluster_leads(embedded_leads, seed_pairs, auto_thr, review_thr, dry_run):
             canon_mat[count] = normed[i]
             canon_leads.append(lead)
             count += 1
+            if tkey and tkey not in title_index:
+                title_index[tkey] = lead
             n_review += 1
         else:
             if not dry_run:
@@ -135,10 +184,14 @@ def cluster_leads(embedded_leads, seed_pairs, auto_thr, review_thr, dry_run):
             canon_mat[count] = normed[i]
             canon_leads.append(lead)
             count += 1
+            if tkey and tkey not in title_index:
+                title_index[tkey] = lead
             n_unique += 1
 
-    return dict(merged=n_merged, review=n_review, unique=n_unique,
-                merge_pairs=merge_pairs, review_pairs=review_pairs)
+    return dict(merged=n_merged_title + n_merged_emb,
+                merged_title=n_merged_title, merged_emb=n_merged_emb,
+                review=n_review, unique=n_unique, merge_pairs=merge_pairs,
+                title_pairs=title_pairs, review_pairs=review_pairs)
 
 
 def repair_protected_groups(db, protected, dry_run):
@@ -342,11 +395,21 @@ def main():
     print(f"Results  (auto-merge >= {auto_thr}, review >= {review_thr})")
     print(f"  Canonical (unique):        {res['unique']}")
     print(f"  Auto-merged (duplicates):  {res['merged']}")
+    print(f"      by identical title:    {res['merged_title']}")
+    print(f"      by embedding score:    {res['merged_emb']}")
     print(f"  Flagged for review:        {res['review']}")
     if protected:
         print(f"  Preserved (manual):        {len(protected)}"
               + (f"  ({n_repointed} re-pointed)" if n_repointed else ""))
     print(f"{'─'*60}\n")
+
+    if res["title_pairs"]:
+        print("Merged by identical title + company (embedding score shown for reference):")
+        for dup, canon, score in res["title_pairs"][:40]:
+            print(f"  [{score:.3f}] #{dup.id} → #{canon.id}  \"{(dup.title or '')[:60]}\"")
+        if len(res["title_pairs"]) > 40:
+            print(f"  ... and {len(res['title_pairs']) - 40} more")
+        print()
 
     if res["review_pairs"]:
         print("Flagged for review (borderline — verify same lawsuit vs same company):")

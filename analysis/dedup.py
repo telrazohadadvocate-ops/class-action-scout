@@ -6,6 +6,7 @@ wording (e.g. "Dove Sensitive Body Wash" vs "Unilever Dove hypoallergenic").
 """
 import math
 import logging
+import unicodedata
 
 try:
     import numpy as _np
@@ -13,6 +14,48 @@ except ImportError:
     _np = None
 
 logger = logging.getLogger("scout.dedup")
+
+
+# ── Exact-title rule ──────────────────────────────────────────────────────
+# The embedding text is "company | title | israeli_law_basis", so two leads
+# with a byte-identical title and the same company still score below the
+# auto-merge floor when their law-basis text differs — the noise sits in a
+# field that has nothing to do with whether it is the same lawsuit. Those
+# pairs were filling the manual review queue. Identical title + identical
+# company is decided on the text itself, before any embedding score.
+#
+# Normalization keeps Unicode letters and digits only (so Hebrew and English
+# both work) and drops case, punctuation, symbols, combining marks and all
+# whitespace.
+
+MIN_TITLE_KEY_LEN = 8   # normalized chars; below this a title is too generic
+                        # to auto-merge on (e.g. "עדכון" / "Settlement") and we
+                        # fall through to the embedding tiers instead.
+
+
+def normalize_for_match(text: str) -> str:
+    """Lowercase, strip punctuation/symbols/marks/whitespace, keep letters+digits."""
+    if not text:
+        return ""
+    out = []
+    for ch in unicodedata.normalize("NFKC", text).casefold():
+        cat = unicodedata.category(ch)
+        if cat[0] in ("L", "N"):
+            out.append(ch)
+    return "".join(out)
+
+
+def title_match_key(title: str, company: str):
+    """
+    Key identifying "same headline, same company", or None when the title is
+    missing or too short to be decisive on its own.
+
+    Compares the FULL title — never a truncated display string.
+    """
+    t = normalize_for_match(title)
+    if len(t) < MIN_TITLE_KEY_LEN:
+        return None
+    return (t, normalize_for_match(company))
 
 
 class SemanticDeduplicator:

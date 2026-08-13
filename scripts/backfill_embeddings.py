@@ -256,10 +256,6 @@ def main():
     print(f"{'='*60}\n")
 
     dedup = SemanticDeduplicator(api_key=VOYAGE_API_KEY, threshold=review_thr)
-    if not dedup.enabled:
-        print("ERROR: VOYAGE_API_KEY not set or voyageai package not installed.")
-        print("Set VOYAGE_API_KEY in your .env file and run: pip install voyageai")
-        sys.exit(1)
 
     init_database(DATABASE_URL)
     db = get_session(DATABASE_URL)
@@ -272,6 +268,16 @@ def main():
     print(f"Leads without embeddings: {total_to_embed}")
 
     if to_embed:
+        # Voyage is only needed to CREATE embeddings. Phase 2 clusters from the
+        # vectors already in the database, so a --recluster over a fully embedded
+        # DB makes no API calls — checking the key up front would have blocked
+        # that case for no reason (and made local testing impossible without one).
+        if not dedup.enabled:
+            print(f"ERROR: {total_to_embed} leads still need embeddings, but "
+                  f"VOYAGE_API_KEY is not set or the voyageai package is missing.")
+            print("Set VOYAGE_API_KEY in your .env file and run: pip install voyageai")
+            sys.exit(1)
+
         batches = [to_embed[i:i + BATCH_SIZE] for i in range(0, total_to_embed, BATCH_SIZE)]
         n_batches = len(batches)
         total_done = 0

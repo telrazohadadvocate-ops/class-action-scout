@@ -92,6 +92,12 @@ class Lead(Base):
     notes = Column(Text)
     reviewed_at = Column(DateTime)
 
+    # Alerting — set once, when this lead has been included in an alert email.
+    # NULL means "never alerted". This is the only thing that stops a lead being
+    # alerted twice, so the send condition is "over threshold AND alerted_at IS
+    # NULL" rather than a time window over scraped_at.
+    alerted_at = Column(DateTime)
+
     # Relationships
     raw_sources = relationship("RawSource", back_populates="lead")
 
@@ -171,6 +177,7 @@ def _run_migrations(engine) -> None:
         ("dup_review",           "TEXT"),
         ("embedding",            "TEXT"),
         ("dedup_group_id",       "TEXT"),
+        ("alerted_at",           "DATETIME"),
     ]
     with engine.connect() as conn:
         for col, dtype in new_cols:

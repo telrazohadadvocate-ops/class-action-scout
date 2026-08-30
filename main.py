@@ -344,7 +344,7 @@ class ClassActionScout:
             # 6. EMAIL ALERTS — in a finally block on purpose: a crash in PACER
             # enrichment, pinkas or the summary must not swallow the alert for
             # leads that already crossed the bar earlier in this run.
-            self._send_run_alerts(run_start)
+            self._send_run_alerts()
 
     # ── Re-analyze pending leads ────────────────────────
 
@@ -608,42 +608,34 @@ a {{ color: #2c5282; }}
 
     # ── Internal helpers ───────────────────────────────
 
-    def _send_run_alerts(self, run_start) -> None:
+    def _send_run_alerts(self) -> None:
         """
-        After each pipeline run: find high-priority leads created in this run,
-        enforce a 24-hour send guard, then email a digest.
+        Email a digest of leads that crossed HIGH_PRIORITY_THRESHOLD and have not
+        been alerted yet.
+
+        The send condition is per-lead state, not a time window: a lead qualifies
+        when priority_score >= HIGH_PRIORITY_THRESHOLD and alerted_at IS NULL.
+        alerted_at is stamped only after a successful send, so a lead scored in a
+        run that later crashed — or one rescored by a backfill — is picked up by
+        the next run instead of being lost, and can never be alerted twice.
         """
         from alerts.email_sender import send_alert_email
         from database.models import AlertLog
 
         try:
-            # 24-hour guard — check AlertLog for a recent send
-            from datetime import timedelta
-            cutoff = datetime.utcnow() - timedelta(hours=24)
-            recent = (
-                self.db.query(AlertLog)
-                .filter(AlertLog.status == "sent", AlertLog.sent_at >= cutoff)
-                .first()
-            )
-            if recent:
-                logger.info(f"Alert already sent today ({recent.sent_at.strftime('%H:%M UTC')}) — skipping")
-                return
-
-            # Leads created in this run with high priority
-            # Strip timezone for SQLite naive-datetime comparison
-            run_start_naive = run_start.replace(tzinfo=None) if hasattr(run_start, "tzinfo") and run_start.tzinfo else run_start
-            new_high = (
+            pending = (
                 self.db.query(Lead)
                 .filter(
-                    Lead.priority == "high",
-                    Lead.scraped_at >= run_start_naive,
-                    Lead.is_duplicate_of_known != True,
+                    Lead.priority_score >= HIGH_PRIORITY_THRESHOLD,
+                    Lead.alerted_at.is_(None),
+                    (Lead.is_duplicate_of_known.is_(None)) | (Lead.is_duplicate_of_known == False),
                 )
+                .order_by(Lead.priority_score.desc())
                 .all()
             )
 
-            if not new_high:
-                logger.info("No new high-priority leads — no email sent")
+            if not pending:
+                logger.info("No un-alerted leads over the threshold — no email sent")
                 return
 
             lead_dicts = [
@@ -654,22 +646,25 @@ a {{ color: #2c5282; }}
                     "source_name": l.source_name or "",
                     "recommended_action": l.recommended_action or "",
                     "strength_score": l.strength_score,
+                    "priority_score": l.priority_score,
                 }
-                for l in new_high
+                for l in pending
             ]
 
             ok = send_alert_email(lead_dicts)
-            log_entry = AlertLog(
-                lead_count=len(new_high),
-                status="sent" if ok else "error",
-            )
-            self.db.add(log_entry)
+            if ok:
+                # Stamp only on success — a failed send leaves alerted_at NULL so
+                # the next run retries these same leads.
+                stamped = datetime.utcnow()
+                for l in pending:
+                    l.alerted_at = stamped
+            self.db.add(AlertLog(lead_count=len(pending), status="sent" if ok else "error"))
             self.db.commit()
 
             if ok:
-                logger.info(f"Sent alert email with {len(new_high)} high-priority leads")
+                logger.info(f"Sent alert email with {len(pending)} lead(s) over {HIGH_PRIORITY_THRESHOLD}")
             else:
-                logger.warning("Alert email failed — check SMTP settings")
+                logger.warning("Alert email failed — leads stay un-alerted and retry next run")
 
         except Exception as e:
             logger.error(f"_send_run_alerts error: {e}")

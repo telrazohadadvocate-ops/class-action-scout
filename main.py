@@ -83,264 +83,268 @@ class ClassActionScout:
         logger.info(f"PIPELINE START — {run_start.isoformat()}")
         logger.info(f"{'='*60}")
 
-        # 1. SCRAPE
-        all_items = []
-        active_scrapers = {
-            k: v for k, v in self.scrapers.items()
-            if sources is None or k in sources
-        }
+        try:
+            # 1. SCRAPE
+            all_items = []
+            active_scrapers = {
+                k: v for k, v in self.scrapers.items()
+                if sources is None or k in sources
+            }
 
-        for name, scraper in active_scrapers.items():
-            log = ScrapeLog(source_name=name, started_at=datetime.now(timezone.utc))
-            try:
-                items = scraper.scrape()
-                log.items_found = len(items)
+            for name, scraper in active_scrapers.items():
+                log = ScrapeLog(source_name=name, started_at=datetime.now(timezone.utc))
+                try:
+                    items = scraper.scrape()
+                    log.items_found = len(items)
 
-                # Deduplicate
-                new_items = []
-                for item in items:
-                    exists = self.db.query(RawSource).filter_by(url=item.url).first()
-                    if not exists:
-                        raw = RawSource(
-                            source_name=item.source_name,
-                            url=item.url,
-                            title=item.title,
-                            content=item.content,
-                            date_published=item.date,
-                        )
-                        self.db.add(raw)
-                        new_items.append((item, raw))
+                    # Deduplicate
+                    new_items = []
+                    for item in items:
+                        exists = self.db.query(RawSource).filter_by(url=item.url).first()
+                        if not exists:
+                            raw = RawSource(
+                                source_name=item.source_name,
+                                url=item.url,
+                                title=item.title,
+                                content=item.content,
+                                date_published=item.date,
+                            )
+                            self.db.add(raw)
+                            new_items.append((item, raw))
 
-                log.items_new = len(new_items)
-                log.success = True
-                all_items.extend(new_items)
-                logger.info(f"[{name}] {len(items)} found, {len(new_items)} new")
+                    log.items_new = len(new_items)
+                    log.success = True
+                    all_items.extend(new_items)
+                    logger.info(f"[{name}] {len(items)} found, {len(new_items)} new")
 
-            except Exception as e:
-                log.success = False
-                log.errors = str(e)
-                logger.error(f"[{name}] scrape failed: {e}")
-            finally:
-                log.completed_at = datetime.now(timezone.utc)
-                self.db.add(log)
+                except Exception as e:
+                    log.success = False
+                    log.errors = str(e)
+                    logger.error(f"[{name}] scrape failed: {e}")
+                finally:
+                    log.completed_at = datetime.now(timezone.utc)
+                    self.db.add(log)
 
-        self.db.commit()
-        logger.info(f"Total new items to analyze: {len(all_items)}")
+            self.db.commit()
+            logger.info(f"Total new items to analyze: {len(all_items)}")
 
-        if not all_items:
-            logger.info("No new items. Pipeline complete.")
-            return
+            if not all_items:
+                logger.info("No new items. Pipeline complete.")
+                return
 
-        # 2. STAGE 1 — CLASSIFICATION
-        logger.info("Stage 1: Classification...")
-        leads_for_deep = []
+            # 2. STAGE 1 — CLASSIFICATION
+            logger.info("Stage 1: Classification...")
+            leads_for_deep = []
 
-        for item, raw in all_items:
-            source_type = SOURCES.get(item.source_name, {}).get("type", "unknown")
-            classification = self.analyzer.classify(
-                title=item.title,
-                content=item.content,
-                source_type=source_type,
-            )
-
-            score = classification.get("relevance_score", 0)
-            lead = Lead(
-                title=item.title,
-                source_name=item.source_name,
-                source_url=item.url,
-                source_type=source_type,
-                company=classification.get("company", ""),
-                sector=classification.get("sector", ""),
-                raw_content=item.content,
-                relevance_score=score,
-                relevance_reasoning=classification.get("reasoning", ""),
-                operates_in_israel=classification.get("operates_in_israel"),
-                israeli_law_basis=classification.get("israeli_law_basis", ""),
-                estimated_class_size=classification.get("estimated_class_size", ""),
-            )
-
-            # Link to raw source
-            raw.lead_id = lead.id
-            self.db.add(lead)
-
-            if score >= MIN_RELEVANCE_SCORE:
-                leads_for_deep.append((lead, item, classification))
-                logger.info(f"  ✓ [{score}/10] {item.title[:60]}")
-            else:
-                logger.info(f"  ✗ [{score}/10] {item.title[:60]} — skipped")
-
-        self.db.commit()
-        logger.info(f"Leads for deep analysis: {len(leads_for_deep)}")
-
-        # 2.5. SEMANTIC DEDUP
-        leads_for_analysis = self._semantic_dedup(leads_for_deep)
-
-        # 3. STAGE 2 — DEEP ANALYSIS
-        if leads_for_analysis:
-            logger.info("Stage 2: Deep legal analysis...")
-            for lead, item, classification in leads_for_analysis:
-                analysis = self.analyzer.analyze(
+            for item, raw in all_items:
+                source_type = SOURCES.get(item.source_name, {}).get("type", "unknown")
+                classification = self.analyzer.classify(
                     title=item.title,
                     content=item.content,
-                    classification=classification,
+                    source_type=source_type,
                 )
 
-                lead.legal_analysis = analysis.get("legal_analysis", "")
-                lead.strength_score = analysis.get("strength_score", 0)
-                lead.priority = analysis.get("priority", "low")
-                lead.recommended_action = analysis.get("recommended_action", "")
-                lead.comparable_cases = json.dumps(
-                    analysis.get("comparable_cases", []), ensure_ascii=False
+                score = classification.get("relevance_score", 0)
+                lead = Lead(
+                    title=item.title,
+                    source_name=item.source_name,
+                    source_url=item.url,
+                    source_type=source_type,
+                    company=classification.get("company", ""),
+                    sector=classification.get("sector", ""),
+                    raw_content=item.content,
+                    relevance_score=score,
+                    relevance_reasoning=classification.get("reasoning", ""),
+                    operates_in_israel=classification.get("operates_in_israel"),
+                    israeli_law_basis=classification.get("israeli_law_basis", ""),
+                    estimated_class_size=classification.get("estimated_class_size", ""),
                 )
-                # Already-filed detection (conservative — see legal_analysis prompt)
-                lead.already_filed_il = bool(analysis.get("already_filed_il", False))
-                lead.already_filed_details = analysis.get("already_filed_details", "") or ""
 
-                # Check against known cases
-                lead.is_duplicate_of_known = self._check_known_cases(lead)
+                # Link to raw source
+                raw.lead_id = lead.id
+                self.db.add(lead)
 
-                # Check expertise match
-                lead.matches_expertise = self._check_expertise(lead)
-
-                priority_icon = "🔴" if lead.priority == "high" else "🟡" if lead.priority == "medium" else "⚪"
-                logger.info(f"  {priority_icon} [{lead.strength_score}/10] {lead.title[:60]}")
-
-            self.db.commit()
-
-        # 3. STAGE 3 — VALUE ESTIMATION
-        if leads_for_analysis:
-            logger.info("Stage 3: Value estimation...")
-            from analysis.value_estimator import estimate_value
-            for lead, _, _ in leads_for_analysis:
-                try:
-                    estimate_value(lead, self.analyzer.client, self.analyzer.model)
-                except Exception as e:
-                    logger.warning(f"  value estimation error for lead {lead.id}: {e}")
-            self.db.commit()
-
-        # 3.5. STAGE 3.5 — PACER ENRICHMENT
-        if leads_for_analysis:
-            logger.info("Stage 3.5: PACER Enrichment...")
-            try:
-                from scrapers.pacer_monitor import PacerMonitorClient
-                pacer = PacerMonitorClient()
-                if pacer.login():
-                    for lead, _, _ in leads_for_analysis:
-                        if lead.strength_score and lead.strength_score >= 5 and lead.company:
-                            logger.info(f"  PACER lookup: {lead.company}")
-                            try:
-                                # Fetch the full article body — case numbers like
-                                # "2:26-cv-1674" appear deep in the text, not in
-                                # the summary that the scraper captured.
-                                full_text = self._fetch_article_text(lead.source_url)
-                                time.sleep(2)  # polite delay after HTTP fetch
-                                if full_text and len(full_text) > len(lead.raw_content or ""):
-                                    lead.raw_content = full_text  # cache for future use
-                                search_text = (lead.raw_content or "") + " " + lead.title
-                                case_num = self._extract_case_number(search_text)
-                                if case_num:
-                                    pacer_url = self._find_pacer_url(case_num, pacer)
-                                    if pacer_url:
-                                        details = pacer.get_case_details(pacer_url)
-                                        if details:
-                                            # Fallback: numeric PacerMonitor ID from URL path
-                                            _parts = pacer_url.split('/case/')
-                                            pm_id = _parts[1].split('/')[0] if len(_parts) > 1 else ""
-                                            # Structured columns — queryable / filterable
-                                            lead.pacer_case_number = details.case_number or pm_id
-                                            lead.pacer_dismissal_type = details.dismissal_type
-                                            lead.pacer_docket_count = len(details.docket_entries)
-                                            lead.pacer_url = pacer_url
-                                            # Human-readable summary appended to notes
-                                            note = (
-                                                f"PACER: {details.case_number} | {details.title}\n"
-                                                f"Dismissal: {details.dismissal_type}\n"
-                                                f"Docket entries: {len(details.docket_entries)}"
-                                            )
-                                            if details.dismissal_type == "voluntary":
-                                                note += "\n⚠ VOLUNTARY DISMISSAL — plaintiff withdrew, weak case signal"
-                                            elif details.dismissal_type == "with_prejudice":
-                                                note += "\n❌ DISMISSED WITH PREJUDICE — case dead on merits"
-                                            elif details.dismissal_type == "without_prejudice":
-                                                note += "\n🔍 DISMISSED WITHOUT PREJUDICE — can be refiled, needs review"
-                                            elif details.dismissal_type == "settled":
-                                                note += "\n⚠ SETTLEMENT — check if Israeli consumers included or excluded"
-                                            else:
-                                                note += "\n✅ CASE ACTIVE — litigation ongoing in US"
-                                            lead.notes = (
-                                                (lead.notes + "\n\n" if lead.notes else "") + note
-                                            )
-                                            logger.info(f"    Found: {details.case_number} [{details.dismissal_type}]")
-                                        else:
-                                            logger.info(f"    Case page not accessible")
-                                    else:
-                                        logger.info(f"    No PacerMonitor URL found for {case_num}")
-                                else:
-                                    logger.info(f"    No case number found in article")
-                            except Exception as e:
-                                logger.warning(f"    PACER error: {e}")
-                            time.sleep(2)  # polite delay between PACER page loads
-                    pacer.close()
+                if score >= MIN_RELEVANCE_SCORE:
+                    leads_for_deep.append((lead, item, classification))
+                    logger.info(f"  ✓ [{score}/10] {item.title[:60]}")
                 else:
-                    logger.warning("  PACER login failed — skipping. Run login_interactive() to refresh cookies.")
-            except ImportError:
-                logger.info("  PACER module not available — install playwright to enable")
-            except Exception as e:
-                logger.warning(f"  PACER stage error: {e}")
+                    logger.info(f"  ✗ [{score}/10] {item.title[:60]} — skipped")
 
             self.db.commit()
+            logger.info(f"Leads for deep analysis: {len(leads_for_deep)}")
 
-        # 4. STAGE 4 — PINKAS CHECK
-        if not skip_pinkas and leads_for_analysis:
-            logger.info("Stage 4: פנקס check...")
-            for lead, _, _ in leads_for_analysis:
-                if lead.company:
-                    result = self.pinkas.check(lead.company)
-                    lead.pinkas_checked = True
-                    lead.pinkas_exists = result.get("found", False)
-                    lead.pinkas_details = json.dumps(
-                        result.get("results", [])[:5], ensure_ascii=False
+            # 2.5. SEMANTIC DEDUP
+            leads_for_analysis = self._semantic_dedup(leads_for_deep)
+
+            # 3. STAGE 2 — DEEP ANALYSIS
+            if leads_for_analysis:
+                logger.info("Stage 2: Deep legal analysis...")
+                for lead, item, classification in leads_for_analysis:
+                    analysis = self.analyzer.analyze(
+                        title=item.title,
+                        content=item.content,
+                        classification=classification,
                     )
-                    if lead.pinkas_exists:
-                        logger.warning(f"  ⚠ Existing case found for: {lead.company}")
-            self.db.commit()
 
-        # 5. SUMMARY
-        elapsed = (datetime.now(timezone.utc) - run_start).total_seconds()
-        high_priority = [l for l, _, _ in leads_for_analysis if l.priority == "high"]
+                    lead.legal_analysis = analysis.get("legal_analysis", "")
+                    lead.strength_score = analysis.get("strength_score", 0)
+                    lead.priority = analysis.get("priority", "low")
+                    lead.recommended_action = analysis.get("recommended_action", "")
+                    lead.comparable_cases = json.dumps(
+                        analysis.get("comparable_cases", []), ensure_ascii=False
+                    )
+                    # Already-filed detection (conservative — see legal_analysis prompt)
+                    lead.already_filed_il = bool(analysis.get("already_filed_il", False))
+                    lead.already_filed_details = analysis.get("already_filed_details", "") or ""
 
-        logger.info(f"\n{'='*60}")
-        logger.info(f"PIPELINE COMPLETE — {elapsed:.0f}s")
-        logger.info(f"  Scraped: {len(all_items)} new items")
-        logger.info(f"  Analyzed: {len(leads_for_analysis)} leads (after dedup)")
-        logger.info(f"  High priority: {len(high_priority)}")
-        # Dedup health — embedded vs total among analysis-eligible canonical leads
-        _elig = self.db.query(Lead).filter(
-            Lead.relevance_score >= MIN_RELEVANCE_SCORE,
-            (Lead.is_duplicate_of_known.is_(None)) | (Lead.is_duplicate_of_known == False),
-        )
-        _elig_total = _elig.count()
-        _elig_embedded = _elig.filter(Lead.embedding.isnot(None)).count()
-        _cov = (_elig_embedded / _elig_total) if _elig_total else 1.0
-        logger.info(f"  Dedup coverage: {_elig_embedded}/{_elig_total} embedded ({_cov:.0%})")
-        if not self.deduplicator.enabled:
-            logger.warning("  ⚠ Dedup DISABLED (no VOYAGE_API_KEY) — new leads are not clustered; duplicates will accumulate")
-        elif _cov < 0.9:
-            logger.warning(f"  ⚠ Dedup coverage {_cov:.0%} < 90% — some eligible leads are unembedded; duplicates may appear")
-        logger.info(f"{'='*60}\n")
+                    # Check against known cases
+                    lead.is_duplicate_of_known = self._check_known_cases(lead)
 
-        # Print high-priority leads
-        if high_priority:
-            logger.info("🔴 HIGH PRIORITY LEADS:")
-            for lead in high_priority:
-                logger.info(f"  • {lead.title}")
-                logger.info(f"    Company: {lead.company}")
-                logger.info(f"    Score: {lead.strength_score}/10")
-                logger.info(f"    Action: {lead.recommended_action}")
-                logger.info("")
+                    # Check expertise match
+                    lead.matches_expertise = self._check_expertise(lead)
 
-        # 6. EMAIL ALERTS
-        self._send_run_alerts(run_start)
+                    priority_icon = "🔴" if lead.priority == "high" else "🟡" if lead.priority == "medium" else "⚪"
+                    logger.info(f"  {priority_icon} [{lead.strength_score}/10] {lead.title[:60]}")
+
+                self.db.commit()
+
+            # 3. STAGE 3 — VALUE ESTIMATION
+            if leads_for_analysis:
+                logger.info("Stage 3: Value estimation...")
+                from analysis.value_estimator import estimate_value
+                for lead, _, _ in leads_for_analysis:
+                    try:
+                        estimate_value(lead, self.analyzer.client, self.analyzer.model)
+                    except Exception as e:
+                        logger.warning(f"  value estimation error for lead {lead.id}: {e}")
+                self.db.commit()
+
+            # 3.5. STAGE 3.5 — PACER ENRICHMENT
+            if leads_for_analysis:
+                logger.info("Stage 3.5: PACER Enrichment...")
+                try:
+                    from scrapers.pacer_monitor import PacerMonitorClient
+                    pacer = PacerMonitorClient()
+                    if pacer.login():
+                        for lead, _, _ in leads_for_analysis:
+                            if lead.strength_score and lead.strength_score >= 5 and lead.company:
+                                logger.info(f"  PACER lookup: {lead.company}")
+                                try:
+                                    # Fetch the full article body — case numbers like
+                                    # "2:26-cv-1674" appear deep in the text, not in
+                                    # the summary that the scraper captured.
+                                    full_text = self._fetch_article_text(lead.source_url)
+                                    time.sleep(2)  # polite delay after HTTP fetch
+                                    if full_text and len(full_text) > len(lead.raw_content or ""):
+                                        lead.raw_content = full_text  # cache for future use
+                                    search_text = (lead.raw_content or "") + " " + lead.title
+                                    case_num = self._extract_case_number(search_text)
+                                    if case_num:
+                                        pacer_url = self._find_pacer_url(case_num, pacer)
+                                        if pacer_url:
+                                            details = pacer.get_case_details(pacer_url)
+                                            if details:
+                                                # Fallback: numeric PacerMonitor ID from URL path
+                                                _parts = pacer_url.split('/case/')
+                                                pm_id = _parts[1].split('/')[0] if len(_parts) > 1 else ""
+                                                # Structured columns — queryable / filterable
+                                                lead.pacer_case_number = details.case_number or pm_id
+                                                lead.pacer_dismissal_type = details.dismissal_type
+                                                lead.pacer_docket_count = len(details.docket_entries)
+                                                lead.pacer_url = pacer_url
+                                                # Human-readable summary appended to notes
+                                                note = (
+                                                    f"PACER: {details.case_number} | {details.title}\n"
+                                                    f"Dismissal: {details.dismissal_type}\n"
+                                                    f"Docket entries: {len(details.docket_entries)}"
+                                                )
+                                                if details.dismissal_type == "voluntary":
+                                                    note += "\n⚠ VOLUNTARY DISMISSAL — plaintiff withdrew, weak case signal"
+                                                elif details.dismissal_type == "with_prejudice":
+                                                    note += "\n❌ DISMISSED WITH PREJUDICE — case dead on merits"
+                                                elif details.dismissal_type == "without_prejudice":
+                                                    note += "\n🔍 DISMISSED WITHOUT PREJUDICE — can be refiled, needs review"
+                                                elif details.dismissal_type == "settled":
+                                                    note += "\n⚠ SETTLEMENT — check if Israeli consumers included or excluded"
+                                                else:
+                                                    note += "\n✅ CASE ACTIVE — litigation ongoing in US"
+                                                lead.notes = (
+                                                    (lead.notes + "\n\n" if lead.notes else "") + note
+                                                )
+                                                logger.info(f"    Found: {details.case_number} [{details.dismissal_type}]")
+                                            else:
+                                                logger.info(f"    Case page not accessible")
+                                        else:
+                                            logger.info(f"    No PacerMonitor URL found for {case_num}")
+                                    else:
+                                        logger.info(f"    No case number found in article")
+                                except Exception as e:
+                                    logger.warning(f"    PACER error: {e}")
+                                time.sleep(2)  # polite delay between PACER page loads
+                        pacer.close()
+                    else:
+                        logger.warning("  PACER login failed — skipping. Run login_interactive() to refresh cookies.")
+                except ImportError:
+                    logger.info("  PACER module not available — install playwright to enable")
+                except Exception as e:
+                    logger.warning(f"  PACER stage error: {e}")
+
+                self.db.commit()
+
+            # 4. STAGE 4 — PINKAS CHECK
+            if not skip_pinkas and leads_for_analysis:
+                logger.info("Stage 4: פנקס check...")
+                for lead, _, _ in leads_for_analysis:
+                    if lead.company:
+                        result = self.pinkas.check(lead.company)
+                        lead.pinkas_checked = True
+                        lead.pinkas_exists = result.get("found", False)
+                        lead.pinkas_details = json.dumps(
+                            result.get("results", [])[:5], ensure_ascii=False
+                        )
+                        if lead.pinkas_exists:
+                            logger.warning(f"  ⚠ Existing case found for: {lead.company}")
+                self.db.commit()
+
+            # 5. SUMMARY
+            elapsed = (datetime.now(timezone.utc) - run_start).total_seconds()
+            high_priority = [l for l, _, _ in leads_for_analysis if l.priority == "high"]
+
+            logger.info(f"\n{'='*60}")
+            logger.info(f"PIPELINE COMPLETE — {elapsed:.0f}s")
+            logger.info(f"  Scraped: {len(all_items)} new items")
+            logger.info(f"  Analyzed: {len(leads_for_analysis)} leads (after dedup)")
+            logger.info(f"  High priority: {len(high_priority)}")
+            # Dedup health — embedded vs total among analysis-eligible canonical leads
+            _elig = self.db.query(Lead).filter(
+                Lead.relevance_score >= MIN_RELEVANCE_SCORE,
+                (Lead.is_duplicate_of_known.is_(None)) | (Lead.is_duplicate_of_known == False),
+            )
+            _elig_total = _elig.count()
+            _elig_embedded = _elig.filter(Lead.embedding.isnot(None)).count()
+            _cov = (_elig_embedded / _elig_total) if _elig_total else 1.0
+            logger.info(f"  Dedup coverage: {_elig_embedded}/{_elig_total} embedded ({_cov:.0%})")
+            if not self.deduplicator.enabled:
+                logger.warning("  ⚠ Dedup DISABLED (no VOYAGE_API_KEY) — new leads are not clustered; duplicates will accumulate")
+            elif _cov < 0.9:
+                logger.warning(f"  ⚠ Dedup coverage {_cov:.0%} < 90% — some eligible leads are unembedded; duplicates may appear")
+            logger.info(f"{'='*60}\n")
+
+            # Print high-priority leads
+            if high_priority:
+                logger.info("🔴 HIGH PRIORITY LEADS:")
+                for lead in high_priority:
+                    logger.info(f"  • {lead.title}")
+                    logger.info(f"    Company: {lead.company}")
+                    logger.info(f"    Score: {lead.strength_score}/10")
+                    logger.info(f"    Action: {lead.recommended_action}")
+                    logger.info("")
+
+        finally:
+            # 6. EMAIL ALERTS — in a finally block on purpose: a crash in PACER
+            # enrichment, pinkas or the summary must not swallow the alert for
+            # leads that already crossed the bar earlier in this run.
+            self._send_run_alerts(run_start)
 
     # ── Re-analyze pending leads ────────────────────────
 

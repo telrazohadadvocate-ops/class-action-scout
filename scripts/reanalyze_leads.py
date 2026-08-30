@@ -14,14 +14,23 @@ Usage (run in the Render Shell so it hits /var/data/scout.db):
   python scripts/reanalyze_leads.py                    # backfill the gaps
   python scripts/reanalyze_leads.py --force            # re-run ALL qualifying leads
   python scripts/reanalyze_leads.py --dry-run --limit 3   # no DB writes
+  python scripts/reanalyze_leads.py --force --first-alert-cap 15  # cap the backlog email
+
+Merged duplicates are skipped — the alert filter drops them, so re-scoring one
+can never produce an alert.
 
 Flags:
-  --force / --all   re-run every deep-analysis lead, even if already populated
-  --limit N         process at most N leads (test small before the full run)
-  --dry-run         compute + log, but roll back (no DB writes)
-  --batch-size N    leads committed per batch (default 10)
+  --force / --all      re-run every deep-analysis lead, even if already populated
+  --limit N            process at most N leads (test small before the full run)
+  --dry-run            compute + log, but roll back (no DB writes)
+  --batch-size N       leads committed per batch (default 10)
+  --first-alert-cap N  after re-scoring, leave only the top N un-alerted leads over
+                       the threshold and mark the rest as already alerted, so the
+                       next scan emails a digest instead of the whole backlog.
+                       Safe to pass on every chunk of a --limit'd run.
 """
 import os, sys, json, time, argparse
+from datetime import datetime
 os.environ["PYTHONUTF8"] = "1"
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -29,6 +38,7 @@ import anthropic
 
 from config.settings import (
     DATABASE_URL, ANTHROPIC_API_KEY, CLAUDE_MODEL, MIN_RELEVANCE_SCORE,
+    HIGH_PRIORITY_THRESHOLD,
 )
 from database.models import init_database, get_session, Lead
 from analysis.claude_analyzer import ClaudeAnalyzer
@@ -54,7 +64,12 @@ def build_classification(lead) -> dict:
 
 def select_leads(db, force: bool, limit):
     """Leads that qualify for deep analysis; in non-force mode, only the gaps."""
-    q = db.query(Lead).filter(Lead.relevance_score >= MIN_RELEVANCE_SCORE)
+    # Merged duplicates are excluded: the alert filter drops them, so re-scoring
+    # one can never produce an alert — it is spend with no possible output.
+    q = db.query(Lead).filter(
+        Lead.relevance_score >= MIN_RELEVANCE_SCORE,
+        (Lead.is_duplicate_of_known.is_(None)) | (Lead.is_duplicate_of_known == False),
+    )
     if not force:
         q = q.filter(
             (Lead.already_filed_il.is_(None)) | (Lead.score_reasoning.is_(None))
@@ -89,6 +104,33 @@ def reanalyze_one(lead, analyzer, client):
     estimate_value(lead, client, CLAUDE_MODEL)
 
 
+def cap_first_alert(db, cap: int) -> tuple:
+    """
+    Keep only the top `cap` un-alerted leads over the threshold; mark the rest as
+    already alerted so the next scan does not email the entire backlog at once.
+
+    Applied over the whole table, not just this run's batch, and against the same
+    predicate _send_run_alerts uses — so running it after each chunk of a
+    --limit'd re-score always leaves exactly the global top `cap` un-alerted.
+    """
+    pending = (
+        db.query(Lead)
+        .filter(
+            Lead.priority_score >= HIGH_PRIORITY_THRESHOLD,
+            Lead.alerted_at.is_(None),
+            (Lead.is_duplicate_of_known.is_(None)) | (Lead.is_duplicate_of_known == False),
+        )
+        .order_by(Lead.priority_score.desc(), Lead.id.desc())
+        .all()
+    )
+    suppressed = pending[cap:]
+    stamped = datetime.utcnow()
+    for lead in suppressed:
+        lead.alerted_at = stamped
+    db.commit()
+    return len(pending) - len(suppressed), len(suppressed)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--force", "--all", dest="force", action="store_true",
@@ -98,6 +140,10 @@ def main():
     ap.add_argument("--dry-run", action="store_true",
                     help="compute + log but do not write to the DB")
     ap.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    ap.add_argument("--first-alert-cap", type=int, default=None, metavar="N",
+                    help="after re-scoring, leave only the top N un-alerted leads "
+                         "over the threshold and mark the rest as already alerted, "
+                         "so the next scan does not email the whole backlog")
     args = ap.parse_args()
 
     if not ANTHROPIC_API_KEY:
@@ -123,6 +169,10 @@ def main():
 
     if total == 0:
         print("Nothing to process.")
+        if args.first_alert_cap is not None and not args.dry_run:
+            kept, suppressed = cap_first_alert(db, args.first_alert_cap)
+            print(f"First-alert cap {args.first_alert_cap}: {kept} lead(s) left for the "
+                  f"next scan to email, {suppressed} marked as already alerted.")
         return
 
     # Snapshot pre-run priority_score for the before/after summary (immutable floats)
@@ -184,6 +234,14 @@ def main():
         if bd or ad:
             print(f"    {b:>7}: {bd:>3} -> {ad:>3}")
     print(f"{'='*64}\n")
+
+    if args.first_alert_cap is not None:
+        if args.dry_run:
+            print(f"(dry-run) first-alert cap {args.first_alert_cap} not applied")
+        else:
+            kept, suppressed = cap_first_alert(db, args.first_alert_cap)
+            print(f"First-alert cap {args.first_alert_cap}: {kept} lead(s) left for the "
+                  f"next scan to email, {suppressed} marked as already alerted.")
 
     if args.dry_run:
         db.rollback()

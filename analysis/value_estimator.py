@@ -193,11 +193,6 @@ def estimate_value(lead, client, model: str) -> None:
             if v_low > _IL_CEILING:
                 v_low = _IL_CEILING
 
-            # Wide uncertainty range → downgrade confidence
-            if v_high > 0 and v_low > 0 and v_high / v_low > 5:
-                confidence = _downgrade_conf(confidence)
-                lead.value_confidence = confidence
-
             lead.est_class_size        = int((cs_low + cs_high) / 2) if cs_high > 0 else None
             lead.est_damage_per_member = (dm_low + dm_high) / 2      if dm_high > 0 else None
             value_high_for_score       = v_high if v_high > 0 else None
@@ -291,10 +286,6 @@ def nis_bucket(v_low, v_high):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _downgrade_conf(conf: str) -> str:
-    return {"high": "medium", "medium": "low", "low": "low"}[conf]
-
 
 def _f(val) -> float:
     try:

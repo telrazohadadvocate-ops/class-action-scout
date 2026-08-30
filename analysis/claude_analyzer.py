@@ -4,6 +4,19 @@ Claude AI Analyzer for Class Action Scout
 Two-stage analysis:
   Stage 1 — Quick classification & Israel relevance scoring
   Stage 2 — Deep legal analysis (only for high-relevance items)
+
+Both stages ask for JSON through structured outputs (output_config / json_schema),
+so a well-formed response is guaranteed by the API rather than reconstructed from
+prose. Two failure modes are handled explicitly instead of silently:
+
+  * Truncation — a response that stops at max_tokens is cut mid-JSON. It is
+    retried once with a larger cap, then raised. Hebrew legal analysis runs well
+    past 3000 output tokens, which is what made this the normal path.
+  * Unparseable output — logged at ERROR with the response tail, and raised.
+
+Deep analysis raises AnalysisError rather than returning a zeroed result. A lead
+skipped with a loud error keeps NULL fields and can be re-analysed later; a lead
+written with strength_score=0 looks like a real verdict and is never revisited.
 """
 import sys
 import os
@@ -28,6 +41,63 @@ logger = logging.getLogger(__name__)
 # Load prompt templates
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
+# ── Output token ceilings ─────────────────────────────────────────────────────
+# Measured on real leads: a full Hebrew legal analysis runs ~3400 output tokens,
+# so the previous 3000 cap truncated routinely. You are billed for tokens
+# generated, not for the ceiling, so headroom here costs nothing.
+MAX_TOKENS_CLASSIFY = 2000
+MAX_TOKENS_ANALYZE  = 8000
+MAX_TOKENS_PATTERN  = 4000
+
+
+class AnalysisError(RuntimeError):
+    """
+    Raised when a stage cannot produce a trustworthy result (truncated response,
+    unparseable JSON, API failure). Callers must skip the lead — never write a
+    default score, which is indistinguishable from a real low verdict.
+    """
+
+
+_CLASSIFY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "relevance_score": {"type": "number"},
+        "company": {"type": "string"},
+        "sector": {"type": "string"},
+        "reasoning": {"type": "string"},
+        "operates_in_israel": {"type": "boolean"},
+        "israeli_law_basis": {"type": "string"},
+        "estimated_class_size": {"type": "string"},
+    },
+    "required": ["relevance_score", "company", "reasoning"],
+    "additionalProperties": False,
+}
+
+_ANALYZE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "strength_score": {"type": "number"},
+        "priority": {"type": "string", "enum": ["high", "medium", "low"]},
+        "legal_analysis": {"type": "string"},
+        "applicable_statutes": {"type": "array", "items": {"type": "string"}},
+        "certification_probability": {"type": "string"},
+        "evidence_available": {"type": "string"},
+        "evidence_needed": {"type": "string"},
+        "expert_opinion_needed": {"type": "string"},
+        "comparable_cases": {"type": "array", "items": {"type": "string"}},
+        "recommended_action": {"type": "string"},
+        "estimated_damages": {"type": "string"},
+        "risks": {"type": "string"},
+        "already_filed_il": {"type": "boolean"},
+        "already_filed_details": {"type": "string"},
+    },
+    "required": [
+        "strength_score", "priority", "legal_analysis",
+        "recommended_action", "already_filed_il", "already_filed_details",
+    ],
+    "additionalProperties": False,
+}
+
 
 def _load_prompt(name: str) -> str:
     path = PROMPTS_DIR / f"{name}.txt"
@@ -41,6 +111,41 @@ class ClaudeAnalyzer:
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
 
+    # ── Request helper ─────────────────────────────────
+
+    def _request_json(self, user_msg: str, max_tokens: int, schema: dict,
+                      label: str, required: tuple = ()) -> dict:
+        """
+        One JSON request with a schema, a truncation retry, and no silent
+        degradation. Raises AnalysisError if a trustworthy result is impossible.
+        """
+        caps = (max_tokens, max_tokens * 2)
+        for attempt, cap in enumerate(caps, start=1):
+            try:
+                resp = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=cap,
+                    messages=[{"role": "user", "content": user_msg}],
+                    output_config={"format": {"type": "json_schema", "schema": schema}},
+                )
+            except Exception as e:
+                raise AnalysisError(f"{label}: API call failed: {e}") from e
+
+            if resp.stop_reason == "max_tokens":
+                logger.error(
+                    "%s: response TRUNCATED at max_tokens=%s (attempt %s/%s) — "
+                    "the JSON is cut mid-object and cannot be trusted",
+                    label, cap, attempt, len(caps),
+                )
+                continue
+
+            text = next((b.text for b in resp.content if b.type == "text"), "")
+            return self._parse_json(text, label=label, required=required)
+
+        raise AnalysisError(
+            f"{label}: response still truncated at max_tokens={caps[-1]} — skipped"
+        )
+
     # ── Stage 1: Classification ────────────────────────
 
     def classify(self, title: str, content: str, source_type: str) -> dict:
@@ -52,24 +157,26 @@ class ClaudeAnalyzer:
         )
 
         try:
-            resp = self.client.messages.create(
-                model=self.model,
-                max_tokens=1500,
-                messages=[{"role": "user", "content": user_msg}],
+            result = self._request_json(
+                user_msg, MAX_TOKENS_CLASSIFY, _CLASSIFY_SCHEMA,
+                label=f"classify '{title[:50]}'", required=("relevance_score",),
             )
-            text = resp.content[0].text
-            result = self._parse_json(text)
-            # Ensure relevance_score is a number
             result["relevance_score"] = self._to_float(result.get("relevance_score", 0))
             logger.debug(f"Classification result: {result.get('relevance_score')} - {result.get('company')}")
             return result
-        except Exception as e:
-            logger.error(f"Classification failed: {e}")
+        except AnalysisError as e:
+            # Stage 1 keeps its contract (score 0 skips deep analysis) but the
+            # failure is now loud rather than a silent zero.
+            logger.error(f"Classification failed — item skipped: {e}")
             return {"relevance_score": 0, "error": str(e)}
 
     # ── Stage 2: Deep legal analysis ───────────────────
 
     def analyze(self, title: str, content: str, classification: dict) -> dict:
+        """
+        Raises AnalysisError on truncation, unparseable JSON, or API failure.
+        Callers must skip the lead rather than persist a default score.
+        """
         prompt = _load_prompt("legal_analysis")
         user_msg = prompt.format(
             title=title,
@@ -77,40 +184,27 @@ class ClaudeAnalyzer:
             classification=json.dumps(classification, ensure_ascii=False),
         )
 
-        try:
-            resp = self.client.messages.create(
-                model=self.model,
-                max_tokens=3000,
-                messages=[{"role": "user", "content": user_msg}],
-            )
-            text = resp.content[0].text
-            logger.debug(f"Deep analysis raw response length: {len(text)}")
-            result = self._parse_json(text)
+        result = self._request_json(
+            user_msg, MAX_TOKENS_ANALYZE, _ANALYZE_SCHEMA,
+            label=f"deep analysis '{title[:50]}'",
+            required=("strength_score", "priority"),
+        )
 
-            # Ensure critical fields exist and are correct types
-            result["strength_score"] = self._to_float(result.get("strength_score", 0))
-            if result["strength_score"] == 0 and "raw_response" not in result:
-                # Try to extract score from text if JSON parse partially failed
-                score_match = re.search(r'"strength_score"\s*:\s*(\d+(?:\.\d+)?)', text)
-                if score_match:
-                    result["strength_score"] = float(score_match.group(1))
+        result["strength_score"] = self._to_float(result.get("strength_score", 0))
 
-            # Normalize priority
-            priority = str(result.get("priority", "low")).lower().strip()
-            if priority not in ("high", "medium", "low"):
-                if result["strength_score"] >= 7:
-                    priority = "high"
-                elif result["strength_score"] >= 4:
-                    priority = "medium"
-                else:
-                    priority = "low"
-            result["priority"] = priority
+        # Normalize priority
+        priority = str(result.get("priority", "low")).lower().strip()
+        if priority not in ("high", "medium", "low"):
+            if result["strength_score"] >= 7:
+                priority = "high"
+            elif result["strength_score"] >= 4:
+                priority = "medium"
+            else:
+                priority = "low"
+        result["priority"] = priority
 
-            logger.info(f"  Deep analysis: strength={result['strength_score']}, priority={result['priority']}")
-            return result
-        except Exception as e:
-            logger.error(f"Deep analysis failed for '{title[:50]}': {e}")
-            return {"strength_score": 0, "priority": "low", "error": str(e)}
+        logger.info(f"  Deep analysis: strength={result['strength_score']}, priority={result['priority']}")
+        return result
 
     # ── Pattern detection (weekly) ─────────────────────
 
@@ -123,10 +217,15 @@ class ClaudeAnalyzer:
         try:
             resp = self.client.messages.create(
                 model=self.model,
-                max_tokens=2000,
+                max_tokens=MAX_TOKENS_PATTERN,
                 messages=[{"role": "user", "content": user_msg}],
             )
-            return self._parse_json(resp.content[0].text)
+            if resp.stop_reason == "max_tokens":
+                logger.error("Pattern detection: response TRUNCATED at max_tokens=%s",
+                             MAX_TOKENS_PATTERN)
+                return {"patterns": [], "error": "truncated"}
+            text = next((b.text for b in resp.content if b.type == "text"), "")
+            return self._parse_json(text, label="pattern detection")
         except Exception as e:
             logger.error(f"Pattern detection failed: {e}")
             return {"patterns": [], "error": str(e)}
@@ -142,8 +241,16 @@ class ClaudeAnalyzer:
             return 0.0
 
     @staticmethod
-    def _parse_json(text: str) -> dict:
-        """Extract JSON from Claude's response — robust parser"""
+    def _parse_json(text: str, label: str = "response", required: tuple = ()) -> dict:
+        """
+        Extract JSON from Claude's response.
+
+        Strict parse, then outermost-object brace matching, then — as a last
+        resort that logs at ERROR — regex field extraction. The regex result is
+        accepted ONLY if it carries every field in `required`; otherwise this
+        raises, because a half-populated dict becomes a wrong score on a lead
+        that nothing will ever revisit.
+        """
         text = text.strip()
 
         # Remove markdown code fences
@@ -151,7 +258,7 @@ class ClaudeAnalyzer:
             text = re.sub(r"```(?:json)?\s*", "", text)
             text = text.replace("```", "").strip()
 
-        # Try direct parse first
+        # Try direct parse first — the normal path under structured outputs
         try:
             return json.loads(text)
         except json.JSONDecodeError:
@@ -174,20 +281,31 @@ class ClaudeAnalyzer:
                         pass
                     start = None
 
-        # Last resort: try to extract key fields with regex
-        logger.warning(f"JSON parse failed, attempting regex extraction from: {text[:200]}")
-        result = {"raw_response": text[:500]}
+        # Last resort: regex extraction. Loud — this is not a normal path.
+        logger.error(
+            "%s: JSON PARSE FAILED (%d chars) — falling back to regex extraction. "
+            "Response tail: %s",
+            label, len(text), text[-300:] if text else "<empty>",
+        )
+        result = {"raw_response": text[:500], "parse_degraded": True}
 
-        # Extract common numeric fields
         for field in ["relevance_score", "strength_score", "certification_probability"]:
             match = re.search(rf'"{field}"\s*:\s*(\d+(?:\.\d+)?)', text)
             if match:
                 result[field] = float(match.group(1))
 
-        # Extract string fields
         for field in ["company", "priority", "sector", "israeli_law_basis"]:
             match = re.search(rf'"{field}"\s*:\s*"([^"]*)"', text)
             if match:
                 result[field] = match.group(1)
 
+        missing = [f for f in required if f not in result]
+        if missing:
+            raise AnalysisError(
+                f"{label}: unparseable JSON and regex could not recover {missing} — skipped"
+            )
+        logger.error(
+            "%s: proceeding on REGEX-EXTRACTED fields only — other fields are lost",
+            label,
+        )
         return result

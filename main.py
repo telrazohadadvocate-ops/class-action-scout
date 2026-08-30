@@ -39,7 +39,7 @@ from config.settings import (
 )
 from database.models import init_database, get_session, Lead, RawSource, ScrapeLog
 from scrapers.scrapers import build_scrapers
-from analysis.claude_analyzer import ClaudeAnalyzer
+from analysis.claude_analyzer import ClaudeAnalyzer, AnalysisError
 from analysis.dedup import SemanticDeduplicator, title_match_key
 from registry.pinkas_checker import PinkasChecker
 
@@ -179,12 +179,21 @@ class ClassActionScout:
             # 3. STAGE 2 — DEEP ANALYSIS
             if leads_for_analysis:
                 logger.info("Stage 2: Deep legal analysis...")
+                stage2_failed = 0
                 for lead, item, classification in leads_for_analysis:
-                    analysis = self.analyzer.analyze(
-                        title=item.title,
-                        content=item.content,
-                        classification=classification,
-                    )
+                    try:
+                        analysis = self.analyzer.analyze(
+                            title=item.title,
+                            content=item.content,
+                            classification=classification,
+                        )
+                    except AnalysisError as e:
+                        # Leave strength_score/priority NULL so reanalyze_pending
+                        # picks this lead up later. Writing a default here would
+                        # look like a real verdict and never be revisited.
+                        stage2_failed += 1
+                        logger.error(f"  ✗ Stage 2 skipped — {e}")
+                        continue
 
                     lead.legal_analysis = analysis.get("legal_analysis", "")
                     lead.strength_score = analysis.get("strength_score", 0)
@@ -206,6 +215,11 @@ class ClassActionScout:
                     priority_icon = "🔴" if lead.priority == "high" else "🟡" if lead.priority == "medium" else "⚪"
                     logger.info(f"  {priority_icon} [{lead.strength_score}/10] {lead.title[:60]}")
 
+                if stage2_failed:
+                    logger.warning(
+                        f"  ⚠ Stage 2 failed on {stage2_failed}/{len(leads_for_analysis)} "
+                        f"lead(s) — left unscored for a later re-analysis"
+                    )
                 self.db.commit()
 
             # 3. STAGE 3 — VALUE ESTIMATION

@@ -1,5 +1,5 @@
 # Class Action Scout — Dependencies
-anthropic>=0.40.0
+anthropic>=0.79.0   # structured outputs (output_config/json_schema) — see analysis/claude_analyzer.py
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 sqlalchemy>=2.0.0

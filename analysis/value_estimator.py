@@ -9,7 +9,41 @@ import re
 import math
 import logging
 
+from analysis.claude_analyzer import AnalysisError
+
 logger = logging.getLogger(__name__)
+
+# Measured on real leads: responses land at 1000-1100 output tokens, i.e. right
+# at the old 1100 ceiling, so any longer-than-average answer was truncated
+# mid-JSON. Headroom is free — you pay for tokens generated, not for the cap.
+MAX_TOKENS_VALUE = 3000
+
+_VALUE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "israel_applicable": {"type": "boolean"},
+        "class_size_low": {"type": "number"},
+        "class_size_high": {"type": "number"},
+        "damage_per_member_low": {"type": "number"},
+        "damage_per_member_high": {"type": "number"},
+        "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+        "reasoning": {"type": "string"},
+        "score_reasoning": {
+            "type": "object",
+            "properties": {
+                "summary":  {"type": "string"},
+                "value":    {"type": "string"},
+                "strength": {"type": "string"},
+                "israel":   {"type": "string"},
+                "change":   {"type": "string"},
+            },
+            "required": ["summary", "value", "strength", "israel", "change"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["israel_applicable", "confidence", "reasoning"],
+    "additionalProperties": False,
+}
 
 # ── Scoring weights (must sum to 1.0) ─────────────────────────────────────────
 WEIGHT_VALUE         = 1 / 3   # monetary value component
@@ -121,10 +155,51 @@ Return ONLY valid JSON, no markdown, no surrounding text:
 """
 
 
+def _request_value_json(client, model: str, prompt: str, lead) -> dict:
+    """
+    One schema-constrained request, with a retry on truncation.
+
+    Raises AnalysisError rather than returning a partial dict: a lead skipped
+    loudly keeps its previous values and can be re-run, whereas a lead scored
+    from an empty parse is indistinguishable from a genuine low-value verdict.
+    """
+    label = f"value estimation for lead {getattr(lead, 'id', '?')}"
+    caps = (MAX_TOKENS_VALUE, MAX_TOKENS_VALUE * 2)
+    for attempt, cap in enumerate(caps, start=1):
+        try:
+            resp = client.messages.create(
+                model=model,
+                max_tokens=cap,
+                messages=[{"role": "user", "content": prompt}],
+                output_config={"format": {"type": "json_schema", "schema": _VALUE_SCHEMA}},
+            )
+        except Exception as e:
+            raise AnalysisError(f"{label}: API call failed: {e}") from e
+
+        if resp.stop_reason == "max_tokens":
+            logger.error(
+                "%s: response TRUNCATED at max_tokens=%s (attempt %s/%s) — "
+                "the JSON is cut mid-object and cannot be trusted",
+                label, cap, attempt, len(caps),
+            )
+            continue
+
+        text = next((b.text for b in resp.content if b.type == "text"), "")
+        return _parse_json(text, label=label)
+
+    raise AnalysisError(
+        f"{label}: response still truncated at max_tokens={caps[-1]} — skipped"
+    )
+
+
 def estimate_value(lead, client, model: str) -> None:
     """
     Estimate monetary value range and compute composite priority_score.
     Writes all results directly onto the lead object; caller must commit.
+
+    Raises AnalysisError if the estimate cannot be trusted. Nothing is written in
+    that case — in particular priority_score is left alone, so a failed run never
+    leaves a score that looks computed.
     """
     text = f"{lead.title}\n\n{lead.raw_content or ''}"[:4000]
     hint = (
@@ -149,12 +224,7 @@ def estimate_value(lead, client, model: str) -> None:
     israel_applicable = None
     value_high_for_score = None
     try:
-        resp = client.messages.create(
-            model=model,
-            max_tokens=1100,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        data = _parse_json(resp.content[0].text)
+        data = _request_value_json(client, model, prompt, lead)
 
         israel_applicable = bool(data.get("israel_applicable", True))
         lead.israel_applicable = israel_applicable
@@ -216,10 +286,19 @@ def estimate_value(lead, client, model: str) -> None:
             lead.est_damage_per_member = None
             logger.info("  [value] IL=False (no Israeli nexus) — %s", lead.title[:50])
 
-    except Exception as e:
-        logger.error("estimate_value AI call failed for lead %s: %s", getattr(lead, "id", "?"), e)
+        # Inside the try on purpose: if anything above failed, no score is
+        # written at all. The old code scored the lead even when the API call
+        # had thrown, producing a confident-looking number from no data.
+        lead.priority_score = _compute_priority_score(
+            lead, value_high_for_score, israel_applicable
+        )
 
-    lead.priority_score = _compute_priority_score(lead, value_high_for_score, israel_applicable)
+    except AnalysisError:
+        raise
+    except Exception as e:
+        raise AnalysisError(
+            f"value estimation failed for lead {getattr(lead, 'id', '?')}: {e}"
+        ) from e
 
 
 def _compute_priority_score(lead, value_high, israel_applicable) -> float:
@@ -306,7 +385,7 @@ def _fmt(v) -> str:
     return f"{v:.0f}"
 
 
-def _parse_json(text: str) -> dict:
+def _parse_json(text: str, label: str = "response") -> dict:
     text = text.strip()
     if "```" in text:
         text = re.sub(r"```(?:json)?\s*", "", text).replace("```", "").strip()
@@ -328,4 +407,8 @@ def _parse_json(text: str) -> dict:
                 except json.JSONDecodeError:
                     pass
                 start = None
-    return {}
+    # No silent {}: an empty dict scored the lead as if the model had answered.
+    raise AnalysisError(
+        f"{label}: response is not valid JSON ({len(text)} chars). "
+        f"Tail: {text[-300:] if text else '<empty>'}"
+    )

@@ -17,7 +17,7 @@ from config.settings import (
     DATABASE_URL, DATABASE_PATH, DASHBOARD_PASSWORD, FLASK_SECRET_KEY,
     VOYAGE_API_KEY, MIN_RELEVANCE_SCORE,
 )
-from database.models import init_database, get_session, Lead, ScrapeLog
+from database.models import init_database, get_session, commit_with_retry, Lead, ScrapeLog
 from analysis.value_estimator import nis_bucket
 
 app = Flask(__name__)
@@ -226,7 +226,7 @@ def update_status(lid):
     data = request.json or {}
     if "status" in data: lead.status = data["status"]; lead.reviewed_at = datetime.now(timezone.utc)
     if "notes" in data: lead.notes = data["notes"]
-    db.commit()
+    commit_with_retry(db)
     cnt = db.query(func.count(Lead.id)).filter(Lead.dedup_group_id == lead.dedup_group_id).scalar() if lead.dedup_group_id else 1
     return jsonify(_lead_to_dict(lead, cnt))
 
@@ -251,7 +251,7 @@ def resolve_duplicate(lid):
         lead.dup_review = "separate"
     else:
         return jsonify({"error": "action must be 'merge' or 'separate'"}), 400
-    db.commit()
+    commit_with_retry(db)
     return jsonify({"status": "ok", "dupReview": lead.dup_review})
 
 

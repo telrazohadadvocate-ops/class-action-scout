@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import anthropic
 
 from config.settings import DATABASE_URL, ANTHROPIC_API_KEY, CLAUDE_MODEL
-from database.models import init_database, get_session, Lead
+from database.models import init_database, get_session, commit_with_retry, Lead
 from analysis.value_estimator import estimate_value, nis_bucket
 
 BATCH_SIZE         = 20   # leads per commit
@@ -94,7 +94,7 @@ def main():
             time.sleep(SLEEP_BETWEEN_CALLS)
 
         if not args.dry_run:
-            db.commit()
+            commit_with_retry(db)
             print(f"  Committed batch {batch_idx}.")
 
         if batch_idx < len(batches):

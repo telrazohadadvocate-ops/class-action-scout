@@ -40,7 +40,7 @@ from config.settings import (
     DATABASE_URL, ANTHROPIC_API_KEY, CLAUDE_MODEL, MIN_RELEVANCE_SCORE,
     HIGH_PRIORITY_THRESHOLD,
 )
-from database.models import init_database, get_session, Lead
+from database.models import init_database, get_session, commit_with_retry, Lead
 from analysis.claude_analyzer import ClaudeAnalyzer
 from analysis.value_estimator import estimate_value
 
@@ -127,7 +127,7 @@ def cap_first_alert(db, cap: int) -> tuple:
     stamped = datetime.utcnow()
     for lead in suppressed:
         lead.alerted_at = stamped
-    db.commit()
+    commit_with_retry(db)
     return len(pending) - len(suppressed), len(suppressed)
 
 
@@ -198,7 +198,7 @@ def main():
         if args.dry_run:
             print(f"  (dry-run) batch {bi} not committed")
         else:
-            db.commit()
+            commit_with_retry(db)
             print(f"  ✓ committed batch {bi}/{len(batches)}")
 
         if bi < len(batches):

@@ -37,7 +37,9 @@ from config.settings import (
     SCRAPE_DELAY_SECONDS, SOURCES, FIRM_EXPERTISE, KNOWN_CASES,
     VOYAGE_API_KEY, DEDUP_THRESHOLD, AUTO_MERGE_THRESHOLD, REVIEW_THRESHOLD,
 )
-from database.models import init_database, get_session, Lead, RawSource, ScrapeLog
+from database.models import (
+    init_database, get_session, commit_with_retry, Lead, RawSource, ScrapeLog,
+)
 from scrapers.scrapers import build_scrapers
 from analysis.claude_analyzer import ClaudeAnalyzer, AnalysisError
 from analysis.dedup import SemanticDeduplicator, title_match_key
@@ -125,7 +127,7 @@ class ClassActionScout:
                     log.completed_at = datetime.now(timezone.utc)
                     self.db.add(log)
 
-            self.db.commit()
+            commit_with_retry(self.db)
             logger.info(f"Total new items to analyze: {len(all_items)}")
 
             if not all_items:
@@ -170,7 +172,7 @@ class ClassActionScout:
                 else:
                     logger.info(f"  ✗ [{score}/10] {item.title[:60]} — skipped")
 
-            self.db.commit()
+            commit_with_retry(self.db)
             logger.info(f"Leads for deep analysis: {len(leads_for_deep)}")
 
             # 2.5. SEMANTIC DEDUP
@@ -220,7 +222,7 @@ class ClassActionScout:
                         f"  ⚠ Stage 2 failed on {stage2_failed}/{len(leads_for_analysis)} "
                         f"lead(s) — left unscored for a later re-analysis"
                     )
-                self.db.commit()
+                commit_with_retry(self.db)
 
             # 3. STAGE 3 — VALUE ESTIMATION
             if leads_for_analysis:
@@ -231,7 +233,7 @@ class ClassActionScout:
                         estimate_value(lead, self.analyzer.client, self.analyzer.model)
                     except Exception as e:
                         logger.warning(f"  value estimation error for lead {lead.id}: {e}")
-                self.db.commit()
+                commit_with_retry(self.db)
 
             # 3.5. STAGE 3.5 — PACER ENRICHMENT
             if leads_for_analysis:
@@ -303,7 +305,7 @@ class ClassActionScout:
                 except Exception as e:
                     logger.warning(f"  PACER stage error: {e}")
 
-                self.db.commit()
+                commit_with_retry(self.db)
 
             # 4. STAGE 4 — PINKAS CHECK
             if not skip_pinkas and leads_for_analysis:
@@ -318,7 +320,7 @@ class ClassActionScout:
                         )
                         if lead.pinkas_exists:
                             logger.warning(f"  ⚠ Existing case found for: {lead.company}")
-                self.db.commit()
+                commit_with_retry(self.db)
 
             # 5. SUMMARY
             elapsed = (datetime.now(timezone.utc) - run_start).total_seconds()
@@ -413,7 +415,7 @@ class ClassActionScout:
             except Exception as e:
                 logger.warning(f"  reanalyze error for lead {lead.id}: {e}")
 
-        self.db.commit()
+        commit_with_retry(self.db)
         return {"reanalyzed": done, "total": len(pending)}
 
     # ── On-demand PACER enrichment ─────────────────────
@@ -481,7 +483,7 @@ class ClassActionScout:
                 time.sleep(2)
 
             pacer.close()
-            self.db.commit()
+            commit_with_retry(self.db)
         except ImportError:
             return {"error": "playwright not installed — run: pip install playwright && playwright install chromium"}
         except Exception as e:
@@ -673,7 +675,7 @@ a {{ color: #2c5282; }}
                 for l in pending:
                     l.alerted_at = stamped
             self.db.add(AlertLog(lead_count=len(pending), status="sent" if ok else "error"))
-            self.db.commit()
+            commit_with_retry(self.db)
 
             if ok:
                 logger.info(f"Sent alert email with {len(pending)} lead(s) over {HIGH_PRIORITY_THRESHOLD}")
@@ -805,7 +807,7 @@ a {{ color: #2c5282; }}
                 if tkey and tkey not in title_index:
                     title_index[tkey] = lead
 
-        self.db.commit()
+        commit_with_retry(self.db)
         n_embedded = sum(1 for e in new_embs if e)
         logger.info(
             f"Dedup: {len(unique)} unique, {n_dup} auto-merged "

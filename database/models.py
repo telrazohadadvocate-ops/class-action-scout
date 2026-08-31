@@ -1,12 +1,18 @@
 """
 Database models for Class Action Scout
 """
+import logging
+import time
 from datetime import datetime, timezone
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Text, Float,
-    Boolean, DateTime, ForeignKey, JSON, text,
+    create_engine, event, inspect as sa_inspect, Column, Integer, String, Text,
+    Float, Boolean, DateTime, ForeignKey, JSON, text,
 )
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.orm.attributes import flag_modified, set_committed_value
+
+logger = logging.getLogger(__name__)
 
 Base = declarative_base()
 
@@ -152,7 +158,7 @@ class AlertLog(Base):
     status = Column(String(50))  # "sent", "error"
 
 
-# ── DB initialization ──────────────────────────────────
+# ── Migrations ─────────────────────────────────────────
 
 def _run_migrations(engine) -> None:
     """
@@ -188,13 +194,145 @@ def _run_migrations(engine) -> None:
                 pass  # column already exists
 
 
+# ── SQLite concurrency ─────────────────────────────────
+#
+# SQLite's rollback-journal default takes an exclusive lock for the whole of
+# every write and blocks readers while it is held, so a long backfill running
+# alongside the web app produces "database is locked". Two settings fix that,
+# and both have to be applied to EVERY connection:
+#
+#   journal_mode=WAL   readers and the single writer no longer block each
+#                      other. Persisted in the DB file, so it is set once and
+#                      is a cheap no-op on later connections.
+#   busy_timeout       on writer-vs-writer contention, wait for the lock
+#                      instead of failing instantly. The default is 5s; the
+#                      web app's writes are short, so 30s is ample headroom.
+
+BUSY_TIMEOUT_MS = 30_000
+
+
+def _configure_sqlite(engine) -> None:
+    """Apply WAL + busy_timeout to every new connection on a SQLite engine."""
+    if engine.dialect.name != "sqlite":
+        return
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragmas(dbapi_conn, _record):  # noqa: ANN001
+        cursor = dbapi_conn.cursor()
+        try:
+            # WAL is unavailable for :memory: and on some network filesystems.
+            # It is an optimisation, not a correctness requirement, so a
+            # failure here is logged and the connection is still usable.
+            try:
+                cursor.execute("PRAGMA journal_mode=WAL")
+            except Exception as exc:  # pragma: no cover - filesystem dependent
+                logger.warning("Could not enable SQLite WAL mode: %s", exc)
+            cursor.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+        finally:
+            cursor.close()
+
+
+def _make_engine(database_url: str):
+    # connect_args timeout covers the window before the busy_timeout PRAGMA
+    # above has run on a fresh connection; pysqlite's own default is 5s.
+    kwargs = {}
+    if database_url.startswith("sqlite"):
+        kwargs["connect_args"] = {"timeout": BUSY_TIMEOUT_MS / 1000}
+    engine = create_engine(database_url, **kwargs)
+    _configure_sqlite(engine)
+    return engine
+
+
+def _is_locked_error(exc: Exception) -> bool:
+    msg = str(getattr(exc, "orig", exc)).lower()
+    return "database is locked" in msg or "database is busy" in msg
+
+
+def _snapshot_pending(session):
+    """
+    Capture the loaded column values of everything the session is about to
+    write, so they can be re-applied if the commit has to be retried.
+
+    Must be called BEFORE the commit: a failed flush rolls the transaction
+    back and expires every instance, leaving nothing to read afterwards.
+    Only values already in the instance dict are copied — touching an unloaded
+    attribute would emit SQL, which a broken transaction cannot serve.
+    """
+    snapshot = []
+    for obj in list(session.new) + list(session.dirty):
+        state = sa_inspect(obj)
+        columns = state.mapper.columns.keys()
+        values = {k: v for k, v in state.dict.items() if k in columns}
+        snapshot.append((obj, values, obj in session.new))
+    return snapshot
+
+
+def _restore_pending(session, snapshot) -> None:
+    """
+    Re-mark the snapshotted objects as pending after a rolled-back attempt,
+    without emitting any SQL.
+
+    The rollback expired every persistent instance, and a plain setattr on an
+    expired attribute fires a lazy load — which autoflushes straight back into
+    the lock we are waiting on. So the values are seeded as already-loaded
+    (set_committed_value) and then flagged modified, which needs no round trip.
+    Rolled-back INSERTs are detached instead of expired, so they only need
+    re-adding.
+    """
+    with session.no_autoflush:
+        for obj, values, is_new in snapshot:
+            if is_new:
+                for key, value in values.items():
+                    setattr(obj, key, value)
+                session.add(obj)
+                continue
+            for key, value in values.items():
+                set_committed_value(obj, key, value)
+            for key in values:
+                flag_modified(obj, key)
+
+
+def commit_with_retry(session, attempts: int = 5, base_delay: float = 1.0):
+    """
+    Commit, retrying if SQLite reports the database as locked.
+
+    busy_timeout already makes SQLite *wait* for a contended lock, so getting
+    here means that wait itself expired — rare, but otherwise fatal to an
+    hours-long backfill. A failed flush rolls the transaction back and expires
+    the instances, discarding the values that were being written, so the
+    pending column values are snapshotted up front and re-applied to the same
+    objects before each retry. Backoff is linear: 1s, 2s, 3s...
+
+    Any non-lock error, and a lock error on the final attempt, is re-raised
+    unchanged — this retries contention, it does not swallow failures.
+    """
+    snapshot = _snapshot_pending(session)
+    for attempt in range(1, attempts + 1):
+        try:
+            session.commit()
+            return
+        except OperationalError as exc:
+            if not _is_locked_error(exc) or attempt == attempts:
+                raise
+            session.rollback()  # clear the failed transaction before retrying
+            _restore_pending(session, snapshot)
+            delay = base_delay * attempt
+            logger.warning(
+                "Database locked on commit (attempt %d/%d); retrying in %.1fs",
+                attempt, attempts, delay,
+            )
+            time.sleep(delay)
+
+
+# ── DB initialization ──────────────────────────────────
+
 def init_database(database_url: str):
-    engine = create_engine(database_url)
+    engine = _make_engine(database_url)
     Base.metadata.create_all(engine)
     _run_migrations(engine)
     return engine
 
 
 def get_session(database_url: str):
-    engine = create_engine(database_url)
+    engine = _make_engine(database_url)
     return sessionmaker(bind=engine)()

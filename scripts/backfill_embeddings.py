@@ -27,7 +27,7 @@ import numpy as np
 from config.settings import (
     DATABASE_URL, VOYAGE_API_KEY, REVIEW_THRESHOLD, AUTO_MERGE_THRESHOLD,
 )
-from database.models import init_database, get_session, Lead
+from database.models import init_database, get_session, commit_with_retry, Lead
 from analysis.dedup import SemanticDeduplicator, title_match_key
 
 BATCH_SIZE = 100            # max texts per Voyage API call (free tier allows up to 128)
@@ -291,7 +291,7 @@ def main():
                 for lead, emb in zip(batch, embs):
                     if emb:
                         lead.embedding = json.dumps(emb)
-                db.commit()
+                commit_with_retry(db)
             total_done += len(batch)
             print(f"Batch {batch_idx}/{n_batches}: embedded {len(batch)} leads "
                   f"(total done: {total_done}/{total_to_embed})")
@@ -429,7 +429,7 @@ def main():
     if args.dry_run:
         print("DRY RUN — no changes written to database.")
     else:
-        db.commit()
+        commit_with_retry(db)
         print(f"Done. {res['unique']} canonical, {res['merged']} merged, "
               f"{res['review']} flagged for review"
               + (f", {len(protected)} manual decisions preserved." if protected else "."))

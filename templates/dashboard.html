@@ -616,8 +616,8 @@ a{color:inherit;text-decoration:none}
           <option value="dismissed">נדחה</option>
         </select>
         <select class="filter-select" id="sort" onchange="loadLeads()">
+          <option value="priority_score" selected>מיין לפי שווי</option>
           <option value="strength">חוזק תיק</option>
-          <option value="priority_score">מיין לפי שווי</option>
           <option value="relevance">רלוונטיות</option>
           <option value="date">תאריך</option>
         </select>
@@ -632,8 +632,12 @@ a{color:inherit;text-decoration:none}
           <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap">הסתר כפילויות</span>
         </span>
         <span style="display:flex;align-items:center;gap:6px;cursor:pointer;flex-shrink:0" onclick="document.getElementById('hideFiledToggle').classList.toggle('on');loadLeads()">
-          <button class="toggle" id="hideFiledToggle" style="pointer-events:none"></button>
+          <button class="toggle on" id="hideFiledToggle" style="pointer-events:none"></button>
           <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap">הסתר שהוגשו</span>
+        </span>
+        <span style="display:flex;align-items:center;gap:6px;cursor:pointer;flex-shrink:0" onclick="document.getElementById('hideNonIlToggle').classList.toggle('on');loadLeads()">
+          <button class="toggle on" id="hideNonIlToggle" style="pointer-events:none"></button>
+          <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap">הסתר לא ישימים בישראל</span>
         </span>
         <span id="reviewChip" style="display:none;align-items:center;gap:6px;cursor:pointer;flex-shrink:0" onclick="document.getElementById('reviewToggle').classList.toggle('on');loadLeads()">
           <button class="toggle" id="reviewToggle" style="pointer-events:none"></button>
@@ -895,6 +899,7 @@ async function loadLeads() {
     period: document.getElementById('ft').value,
     hide_duplicates: document.getElementById('hideDupToggle').classList.contains('on'),
     hide_filed: document.getElementById('hideFiledToggle').classList.contains('on'),
+    hide_non_israeli: document.getElementById('hideNonIlToggle').classList.contains('on'),
     review: document.getElementById('reviewToggle').classList.contains('on') ? 'pending' : '',
     limit: 100
   });

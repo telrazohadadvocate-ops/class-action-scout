@@ -149,8 +149,13 @@ def get_leads():
             since = now - timedelta(days=30)
         q = q.filter(Lead.scraped_at >= since.replace(tzinfo=None))
     # Hide leads where an Israeli class action was already filed
-    if request.args.get("hide_filed", "false").lower() == "true":
+    if request.args.get("hide_filed", "true").lower() == "true":
         q = q.filter((Lead.already_filed_il == False) | Lead.already_filed_il.is_(None))
+    # Hide leads with no Israeli nexus. NULL means "not scored yet" (a lead
+    # mid-pipeline, or awaiting a re-score) and stays visible — only leads
+    # positively judged inapplicable are hidden.
+    if request.args.get("hide_non_israeli", "true").lower() == "true":
+        q = q.filter((Lead.israel_applicable == True) | Lead.israel_applicable.is_(None))
     # Show only leads flagged as suspected duplicates awaiting review
     if request.args.get("review", "").lower() == "pending":
         q = q.filter(Lead.dup_review == "pending")
@@ -158,7 +163,7 @@ def get_leads():
     if search:
         like = f"%{search}%"
         q = q.filter((Lead.title.ilike(like))|(Lead.company.ilike(like))|(Lead.legal_analysis.ilike(like)))
-    sort = request.args.get("sort", "strength")
+    sort = request.args.get("sort", "priority_score")
     if sort == "strength": q = q.order_by(Lead.strength_score.desc().nullslast())
     elif sort == "priority_score": q = q.order_by(Lead.priority_score.desc().nullslast())
     elif sort == "relevance": q = q.order_by(Lead.relevance_score.desc().nullslast())

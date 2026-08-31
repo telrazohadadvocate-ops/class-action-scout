@@ -273,11 +273,12 @@ def _restore_pending(session, snapshot) -> None:
     without emitting any SQL.
 
     The rollback expired every persistent instance, and a plain setattr on an
-    expired attribute fires a lazy load — which autoflushes straight back into
-    the lock we are waiting on. So the values are seeded as already-loaded
-    (set_committed_value) and then flagged modified, which needs no round trip.
-    Rolled-back INSERTs are detached instead of expired, so they only need
-    re-adding.
+    expired attribute fires a lazy load. Two guards, both load-bearing:
+    no_autoflush stops that load flushing the half-restored state straight
+    back into the lock being waited on, and seeding the values as
+    already-loaded (set_committed_value) then flagging them modified avoids
+    the load altogether. Rolled-back INSERTs are detached rather than expired,
+    so they only need re-adding.
     """
     with session.no_autoflush:
         for obj, values, is_new in snapshot:

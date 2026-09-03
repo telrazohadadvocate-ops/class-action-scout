@@ -4,8 +4,8 @@ Guard test for the dashboard's default view (app.py /api/leads + the markup in
 templates/dashboard.html).
 
 The dashboard opens on ~2,700 leads, so the defaults ARE the product: highest
-priority_score first, with already-filed and non-Israeli leads hidden. Three
-ways this rots silently, none of which look like a bug in review:
+priority_score first, with non-Israeli leads hidden. Four ways this rots
+silently, none of which look like a bug in review:
 
   1. A lead with israel_applicable IS NULL means "not scored yet" — mid-
      pipeline, or waiting on a re-score. Widening the filter to hide NULL as
@@ -14,6 +14,11 @@ ways this rots silently, none of which look like a bug in review:
   3. The API defaults and the markup defaults are set in two different files.
      If they drift, a bare /api/leads stops matching what the dashboard shows,
      and the toggles come up out of sync with the rows underneath them.
+  4. already_filed_il must NOT hide a lead by default. The flag is an LLM
+     reading of the source text; when it is wrong, hiding the lead removes a
+     real case from the candidate set and nobody ever learns it was there. The
+     tag on the card carries the signal, the filter is opt-in, and the flag has
+     no effect on priority_score either (analysis/value_estimator.py).
 
 Runs offline against a throwaway SQLite DB; no API keys needed.
 
@@ -87,10 +92,11 @@ def test_default_view():
     c = client()
     total, got = titles(c)
     check("sorted by priority_score, highest first",
-          got == ["high value IL", "unscored nexus", "mid value IL"])
-    check("already-filed leads are hidden", "top but FILED" not in got)
+          got == ["top but FILED", "high value IL", "unscored nexus", "mid value IL"])
+    check("already-filed leads stay visible, tagged rather than hidden",
+          "top but FILED" in got)
     check("non-Israeli leads are hidden", "top but NON-IL" not in got)
-    check("total reflects the filters, not the table size", total == 3)
+    check("total reflects the filters, not the table size", total == 4)
 
 
 def test_unscored_leads_stay_visible():
@@ -103,32 +109,35 @@ def test_unscored_leads_stay_visible():
 
 
 def test_filters_are_toggleable():
-    print("\n### both filters can be switched off")
+    print("\n### each filter can be switched the other way")
     c = client()
-    total, got = titles(c, "?hide_filed=false")
-    check("showing filed leads brings back the top-scored one",
-          got[0] == "top but FILED" and total == 4)
+    total, got = titles(c, "?hide_filed=true")
+    check("opting in to hiding filed leads drops the top-scored one",
+          "top but FILED" not in got and total == 3)
 
     total, got = titles(c, "?hide_non_israeli=false")
-    check("showing non-Israeli leads brings back the top-scored one",
-          got[0] == "top but NON-IL" and total == 4)
+    check("showing non-Israeli leads brings the hidden one back into the list",
+          "top but NON-IL" in got and total == 5)
 
-    total, got = titles(c, "?hide_filed=false&hide_non_israeli=false")
+    total, got = titles(c, "?hide_non_israeli=false&hide_filed=false")
     check("both off shows every lead", total == len(FIXTURES))
     check("still ordered by priority_score",
           got == ["top but FILED", "top but NON-IL", "high value IL",
                   "unscored nexus", "mid value IL"])
 
+    total, got = titles(c, "?hide_filed=true&hide_non_israeli=true")
+    check("both filters on narrows to the actionable Israeli leads",
+          got == ["high value IL", "unscored nexus", "mid value IL"] and total == 3)
+
 
 def test_other_sorts_still_work():
     print("\n### the other sort options still apply")
     c = client()
+    default_order = ["top but FILED", "high value IL", "unscored nexus", "mid value IL"]
     _, by_date = titles(c, "?sort=date")
-    check("sort=date is honoured, not silently ignored",
-          by_date != ["high value IL", "unscored nexus", "mid value IL"])
+    check("sort=date is honoured, not silently ignored", by_date != default_order)
     _, by_score = titles(c, "?sort=priority_score")
-    check("sort=priority_score matches the default",
-          by_score == ["high value IL", "unscored nexus", "mid value IL"])
+    check("sort=priority_score matches the default", by_score == default_order)
 
 
 def test_markup_matches_api_defaults():
@@ -146,15 +155,16 @@ def test_markup_matches_api_defaults():
         m = re.search(r'<button class="([^"]*)" id="%s"' % el_id, html)
         return m is not None and "on" in m.group(1).split()
 
-    check("hide-already-filed toggle renders as on", toggle_on("hideFiledToggle"))
+    check("hide-already-filed toggle renders as OFF — filed leads stay visible",
+          not toggle_on("hideFiledToggle"))
     check("hide-non-Israeli toggle renders as on", toggle_on("hideNonIlToggle"))
     check("the new filter is sent with every query",
           "hide_non_israeli:" in html and "hideNonIlToggle" in html)
 
     # The API must default the same way, so a bare request matches the markup.
     src = pathlib.Path(ROOT, "app.py").read_text(encoding="utf-8")
-    check('API defaults hide_filed to "true"',
-          'request.args.get("hide_filed", "true")' in src)
+    check('API defaults hide_filed to "false"',
+          'request.args.get("hide_filed", "false")' in src)
     check('API defaults hide_non_israeli to "true"',
           'request.args.get("hide_non_israeli", "true")' in src)
     check('API defaults sort to priority_score',

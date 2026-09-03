@@ -148,8 +148,13 @@ def get_leads():
         else:
             since = now - timedelta(days=30)
         q = q.filter(Lead.scraped_at >= since.replace(tzinfo=None))
-    # Hide leads where an Israeli class action was already filed
-    if request.args.get("hide_filed", "true").lower() == "true":
+    # Already-filed leads stay in the default view, carrying their card tag —
+    # opt in to hiding them with hide_filed=true. The flag is an LLM reading of
+    # the source text and is sometimes wrong; a wrongly-tagged lead that is
+    # visible costs a moment to dismiss, whereas one filtered out of the default
+    # view is a case that is never seen at all. It no longer affects
+    # priority_score either (see analysis/value_estimator.py).
+    if request.args.get("hide_filed", "false").lower() == "true":
         q = q.filter((Lead.already_filed_il == False) | Lead.already_filed_il.is_(None))
     # Hide leads with no Israeli nexus. NULL means "not scored yet" (a lead
     # mid-pipeline, or awaiting a re-score) and stays visible — only leads

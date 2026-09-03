@@ -632,7 +632,7 @@ a{color:inherit;text-decoration:none}
           <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap">הסתר כפילויות</span>
         </span>
         <span style="display:flex;align-items:center;gap:6px;cursor:pointer;flex-shrink:0" onclick="document.getElementById('hideFiledToggle').classList.toggle('on');loadLeads()">
-          <button class="toggle on" id="hideFiledToggle" style="pointer-events:none"></button>
+          <button class="toggle" id="hideFiledToggle" style="pointer-events:none"></button>
           <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap">הסתר שהוגשו</span>
         </span>
         <span style="display:flex;align-items:center;gap:6px;cursor:pointer;flex-shrink:0" onclick="document.getElementById('hideNonIlToggle').classList.toggle('on');loadLeads()">
@@ -1074,7 +1074,7 @@ function buildLeadCard(l) {
           <div class="value-disclaimer">⚠ הערכה גסה לצורכי תעדוף בלבד — אינה ייעוץ משפטי או פיננסי</div>
         </div>`;
       })():''}
-      ${l.alreadyFiledIl?`<div class="detail-panel panel-filed"><div class="detail-panel-head ph-filed"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M5 0L0 9h10z"/></svg> כבר הוגשה ייצוגית בישראל</div><div style="color:var(--text-secondary);line-height:1.6">${l.alreadyFiledDetails||'הניתוח זיהה שכבר הוגשה תובענה ייצוגית בישראל בעניין זה — הזדמנות שהוחמצה, לא ליד. ציון העדיפות הופחת.'}</div></div>`:''}
+      ${l.alreadyFiledIl?`<div class="detail-panel panel-filed"><div class="detail-panel-head ph-filed"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M5 0L0 9h10z"/></svg> כבר הוגשה ייצוגית בישראל</div><div style="color:var(--text-secondary);line-height:1.6">${l.alreadyFiledDetails||'הניתוח זיהה שכבר הוגשה תובענה ייצוגית בישראל בעניין זה — כדאי לבדוק לפני השקעת זמן. הזיהוי אוטומטי ועשוי לטעות, ולכן אינו משפיע על ציון העדיפות.'}</div></div>`:''}
       ${l.scoreReasoning?buildScoreReasoning(l.scoreReasoning):''}
       ${l.relevanceReasoning?`<div class="detail-panel"><div class="detail-panel-head ph-legal"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><circle cx="5" cy="5" r="4.5"/></svg> בסיס הרלוונטיות</div>${l.relevanceReasoning}</div>`:''}
       ${l.notes?`<div class="detail-panel"><div class="detail-panel-head ph-notes"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="8" height="8" rx="1"/></svg> הערות</div>${l.notes.replace(/\n/g,'<br>')}</div>`:''}

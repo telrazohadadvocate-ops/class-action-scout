@@ -179,6 +179,12 @@ class ClassActionScout:
             leads_for_analysis = self._semantic_dedup(leads_for_deep)
 
             # 3. STAGE 2 — DEEP ANALYSIS
+            #
+            # Only the leads that come out of here go on to Stage 3. A lead whose
+            # legal analysis failed has no strength_score, and scoring it anyway
+            # would blend a certification component of 0 into a number that is
+            # then stored and displayed like any other verdict.
+            leads_scored = []
             if leads_for_analysis:
                 logger.info("Stage 2: Deep legal analysis...")
                 stage2_failed = 0
@@ -214,25 +220,38 @@ class ClassActionScout:
                     # Check expertise match
                     lead.matches_expertise = self._check_expertise(lead)
 
+                    leads_scored.append(lead)
+
                     priority_icon = "🔴" if lead.priority == "high" else "🟡" if lead.priority == "medium" else "⚪"
                     logger.info(f"  {priority_icon} [{lead.strength_score}/10] {lead.title[:60]}")
 
                 if stage2_failed:
                     logger.warning(
                         f"  ⚠ Stage 2 failed on {stage2_failed}/{len(leads_for_analysis)} "
-                        f"lead(s) — left unscored for a later re-analysis"
+                        f"lead(s) — left unscored, and skipped in Stage 3 so no "
+                        f"priority_score is written for them"
                     )
                 commit_with_retry(self.db)
 
             # 3. STAGE 3 — VALUE ESTIMATION
-            if leads_for_analysis:
+            # Runs over leads_scored, not leads_for_analysis: a lead that failed
+            # Stage 2 must come out of this run with priority_score still NULL, so
+            # it reads as "not analysed" and reanalyze_pending picks it up again.
+            if leads_scored:
                 logger.info("Stage 3: Value estimation...")
                 from analysis.value_estimator import estimate_value
-                for lead, _, _ in leads_for_analysis:
+                stage3_failed = 0
+                for lead in leads_scored:
                     try:
                         estimate_value(lead, self.analyzer.client, self.analyzer.model)
                     except Exception as e:
+                        stage3_failed += 1
                         logger.warning(f"  value estimation error for lead {lead.id}: {e}")
+                if stage3_failed:
+                    logger.warning(
+                        f"  ⚠ Stage 3 failed on {stage3_failed}/{len(leads_scored)} "
+                        f"lead(s) — priority_score left NULL rather than partial"
+                    )
                 commit_with_retry(self.db)
 
             # 3.5. STAGE 3.5 — PACER ENRICHMENT

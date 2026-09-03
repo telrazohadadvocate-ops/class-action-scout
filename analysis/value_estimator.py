@@ -50,9 +50,17 @@ WEIGHT_VALUE         = 1 / 3   # monetary value component
 WEIGHT_CERTIFICATION = 1 / 3   # case strength / cert probability
 WEIGHT_EXPERTISE     = 1 / 3   # firm expertise fit
 
-# An Israeli class action ALREADY filed on this matter is a missed opportunity,
-# not a lead — downrank the composite score by this factor. Tunable.
-ALREADY_FILED_MULTIPLIER = 0.4
+# already_filed_il deliberately has NO effect on priority_score. It is a tag on
+# the card, not a verdict.
+#
+# It used to multiply the score by 0.4, which capped a flagged lead at 3.9 —
+# under the alert threshold and off the bottom of the dashboard. The flag is an
+# LLM's conservative-but-fallible reading of the source text, so a false positive
+# silently removed a lead from the candidate set for good. The cost of the two
+# errors is not symmetric: a wrongly-tagged lead that stays visible costs a few
+# seconds to dismiss, while one that is downranked out of sight costs a case
+# nobody knows was missed. The tag informs the ranking decision; it does not make
+# it. See app.py /api/leads (hide_filed defaults to false) for the view side.
 
 # Confidence multiplier applied to the blended score after weighting.
 CONF_MULTIPLIER = {
@@ -201,6 +209,17 @@ def estimate_value(lead, client, model: str) -> None:
     that case — in particular priority_score is left alone, so a failed run never
     leaves a score that looks computed.
     """
+    # Certification is a third of the composite score. With strength_score NULL
+    # (Stage 2 failed or never ran) that third silently becomes 0, and the lead
+    # is stored with a low-looking score that reads as a real verdict. Refuse
+    # instead — every caller treats AnalysisError as "skip and leave NULL".
+    if lead.strength_score is None:
+        raise AnalysisError(
+            f"value estimation for lead {getattr(lead, 'id', '?')}: no "
+            f"strength_score — Stage 2 has not produced a legal analysis, so a "
+            f"composite score would be computed from a missing component"
+        )
+
     text = f"{lead.title}\n\n{lead.raw_content or ''}"[:4000]
     hint = (
         f"\nHint — Stage-1 estimated_class_size: {lead.estimated_class_size}"
@@ -336,9 +355,8 @@ def _compute_priority_score(lead, value_high, israel_applicable) -> float:
     if israel_applicable is False:
         score = max(1.0, round(score * 0.3, 1))
 
-    # An Israeli class action already filed on this matter → downrank
-    if getattr(lead, "already_filed_il", False):
-        score = max(1.0, round(score * ALREADY_FILED_MULTIPLIER, 1))
+    # already_filed_il is intentionally absent here — it is a card tag, not a
+    # score input. See the note at the top of this module.
 
     return score
 

@@ -15,6 +15,7 @@ import logging
 import argparse
 import time
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from pathlib import Path
 
 # Ensure UTF-8 on Windows
@@ -44,6 +45,11 @@ from scrapers.scrapers import build_scrapers
 from analysis.claude_analyzer import ClaudeAnalyzer, AnalysisError
 from analysis.dedup import SemanticDeduplicator, title_match_key
 from registry.pinkas_checker import PinkasChecker
+
+# Stage-1 technical failures are stored as relevance_score=NULL + stage1_error
+# and retried on later runs, at most this many classification attempts in total.
+MAX_STAGE1_ATTEMPTS = 3
+STAGE1_RETRY_BATCH = 50      # bound the retry spend per run
 
 
 class ClassActionScout:
@@ -85,9 +91,21 @@ class ClassActionScout:
         logger.info(f"PIPELINE START — {run_start.isoformat()}")
         logger.info(f"{'='*60}")
 
+        # Per-stage counts for this run — logged at the end even if the run
+        # crashes, so "a stage received input and produced nothing" is visible.
+        stats = {
+            "scrape": {"found": 0, "new": 0, "resumed": 0},
+            "stage1": {"classified": 0, "passed": 0, "below_gate": 0, "error": 0, "retried": 0},
+            "dedup": {"in": 0, "unique": 0, "merged": 0, "review": 0},
+            "stage2": {"in": 0, "ok": 0, "failed": 0},
+            "stage3": {"in": 0, "ok": 0, "failed": 0},
+        }
+        self.last_run_stats = stats
+
         try:
             # 1. SCRAPE
             all_items = []
+            seen_urls = set()
             active_scrapers = {
                 k: v for k, v in self.scrapers.items()
                 if sources is None or k in sources
@@ -98,10 +116,17 @@ class ClassActionScout:
                 try:
                     items = scraper.scrape()
                     log.items_found = len(items)
+                    stats["scrape"]["found"] += len(items)
 
-                    # Deduplicate
+                    # Deduplicate by URL. A source that was saved but never got a
+                    # lead (a run died between scraping and the Stage-1 commit) is
+                    # resumed instead of being skipped forever.
                     new_items = []
+                    n_resumed = 0
                     for item in items:
+                        if item.url in seen_urls:
+                            continue
+                        seen_urls.add(item.url)
                         exists = self.db.query(RawSource).filter_by(url=item.url).first()
                         if not exists:
                             raw = RawSource(
@@ -113,11 +138,19 @@ class ClassActionScout:
                             )
                             self.db.add(raw)
                             new_items.append((item, raw))
+                        elif self._raw_needs_stage1(exists):
+                            new_items.append((item, exists))
+                            n_resumed += 1
 
-                    log.items_new = len(new_items)
+                    log.items_new = len(new_items) - n_resumed
                     log.success = True
+                    stats["scrape"]["new"] += len(new_items) - n_resumed
+                    stats["scrape"]["resumed"] += n_resumed
                     all_items.extend(new_items)
-                    logger.info(f"[{name}] {len(items)} found, {len(new_items)} new")
+                    logger.info(
+                        f"[{name}] {len(items)} found, {len(new_items) - n_resumed} new"
+                        + (f", {n_resumed} resumed (saved earlier, never classified)" if n_resumed else "")
+                    )
 
                 except Exception as e:
                     log.success = False
@@ -128,55 +161,76 @@ class ClassActionScout:
                     self.db.add(log)
 
             commit_with_retry(self.db)
-            logger.info(f"Total new items to analyze: {len(all_items)}")
+            retry_leads = self._stage1_retry_candidates()
+            logger.info(
+                f"Total new items to analyze: {len(all_items)}; "
+                f"Stage-1 retries due: {len(retry_leads)}"
+            )
 
-            if not all_items:
+            if not all_items and not retry_leads:
                 logger.info("No new items. Pipeline complete.")
                 return
 
             # 2. STAGE 1 — CLASSIFICATION
+            #
+            # Three outcomes, kept apart: pass (>= gate), below gate (a real low
+            # verdict), and stage1 error (no verdict — NULL score, retried later).
             logger.info("Stage 1: Classification...")
             leads_for_deep = []
+            run_leads = []          # every lead touched by Stage 1 in this run
 
             for item, raw in all_items:
                 source_type = SOURCES.get(item.source_name, {}).get("type", "unknown")
-                classification = self.analyzer.classify(
-                    title=item.title,
-                    content=item.content,
-                    source_type=source_type,
-                )
-
-                score = classification.get("relevance_score", 0)
+                classification = self._classify_safely(item.title, item.content, source_type)
                 lead = Lead(
                     title=item.title,
                     source_name=item.source_name,
                     source_url=item.url,
                     source_type=source_type,
-                    company=classification.get("company", ""),
-                    sector=classification.get("sector", ""),
                     raw_content=item.content,
-                    relevance_score=score,
-                    relevance_reasoning=classification.get("reasoning", ""),
-                    operates_in_israel=classification.get("operates_in_israel"),
-                    israeli_law_basis=classification.get("israeli_law_basis", ""),
-                    estimated_class_size=classification.get("estimated_class_size", ""),
                 )
-
-                # Link to raw source
-                raw.lead_id = lead.id
+                decision = self._apply_stage1(lead, classification)
+                # Link through the relationship, not raw.lead_id = lead.id — the
+                # id does not exist until flush, so that assignment stored NULL.
+                raw.lead = lead
                 self.db.add(lead)
-
-                if score >= MIN_RELEVANCE_SCORE:
+                run_leads.append(lead)
+                self._count_stage1(stats, decision)
+                self._log_stage1(f"raw#{raw.id}", lead, decision)
+                if decision == "pass":
                     leads_for_deep.append((lead, item, classification))
-                    logger.info(f"  ✓ [{score}/10] {item.title[:60]}")
-                else:
-                    logger.info(f"  ✗ [{score}/10] {item.title[:60]} — skipped")
+
+            for lead in retry_leads:
+                item = SimpleNamespace(
+                    title=lead.title, content=lead.raw_content or "",
+                    url=lead.source_url, source_name=lead.source_name,
+                )
+                classification = self._classify_safely(
+                    lead.title, lead.raw_content or "", lead.source_type or "unknown"
+                )
+                decision = self._apply_stage1(lead, classification)
+                run_leads.append(lead)
+                stats["stage1"]["retried"] += 1
+                self._count_stage1(stats, decision)
+                self._log_stage1(f"#{lead.id} (retry {lead.stage1_attempts}/{MAX_STAGE1_ATTEMPTS})", lead, decision)
+                if decision == "pass":
+                    leads_for_deep.append((lead, item, classification))
 
             commit_with_retry(self.db)
-            logger.info(f"Leads for deep analysis: {len(leads_for_deep)}")
+            run_ids = {l.id for l in run_leads}
+            logger.info(
+                f"Stage 1 → {stats['stage1']['classified']} classified: "
+                f"{stats['stage1']['passed']} passed, {stats['stage1']['below_gate']} below gate, "
+                f"{stats['stage1']['error']} error; passed ids: "
+                + (", ".join(f"#{l.id}" for l, _, _ in leads_for_deep) or "none")
+            )
 
-            # 2.5. SEMANTIC DEDUP
-            leads_for_analysis = self._semantic_dedup(leads_for_deep)
+            # 2.5. SEMANTIC DEDUP — never compares a lead with itself: every lead
+            # touched in this run is excluded from the stored-lead indexes, and
+            # in-batch duplicates are caught against earlier leads of the batch.
+            leads_for_analysis = self._semantic_dedup(
+                leads_for_deep, exclude_ids=run_ids, stats=stats["dedup"]
+            )
 
             # 3. STAGE 2 — DEEP ANALYSIS
             #
@@ -188,6 +242,7 @@ class ClassActionScout:
             if leads_for_analysis:
                 logger.info("Stage 2: Deep legal analysis...")
                 stage2_failed = 0
+                stats["stage2"]["in"] = len(leads_for_analysis)
                 for lead, item, classification in leads_for_analysis:
                     try:
                         analysis = self.analyzer.analyze(
@@ -200,7 +255,8 @@ class ClassActionScout:
                         # picks this lead up later. Writing a default here would
                         # look like a real verdict and never be revisited.
                         stage2_failed += 1
-                        logger.error(f"  ✗ Stage 2 skipped — {e}")
+                        stats["stage2"]["failed"] += 1
+                        logger.error(f"  ✗ #{lead.id} Stage 2 failed — left unscored: {e}")
                         continue
 
                     lead.legal_analysis = analysis.get("legal_analysis", "")
@@ -221,9 +277,10 @@ class ClassActionScout:
                     lead.matches_expertise = self._check_expertise(lead)
 
                     leads_scored.append(lead)
+                    stats["stage2"]["ok"] += 1
 
                     priority_icon = "🔴" if lead.priority == "high" else "🟡" if lead.priority == "medium" else "⚪"
-                    logger.info(f"  {priority_icon} [{lead.strength_score}/10] {lead.title[:60]}")
+                    logger.info(f"  {priority_icon} #{lead.id} [{lead.strength_score}/10] {lead.title[:60]}")
 
                 if stage2_failed:
                     logger.warning(
@@ -241,11 +298,14 @@ class ClassActionScout:
                 logger.info("Stage 3: Value estimation...")
                 from analysis.value_estimator import estimate_value
                 stage3_failed = 0
+                stats["stage3"]["in"] = len(leads_scored)
                 for lead in leads_scored:
                     try:
                         estimate_value(lead, self.analyzer.client, self.analyzer.model)
+                        stats["stage3"]["ok"] += 1
                     except Exception as e:
                         stage3_failed += 1
+                        stats["stage3"]["failed"] += 1
                         logger.warning(f"  value estimation error for lead {lead.id}: {e}")
                 if stage3_failed:
                     logger.warning(
@@ -376,6 +436,7 @@ class ClassActionScout:
                     logger.info("")
 
         finally:
+            self._log_stage_counts(stats)
             # 6. EMAIL ALERTS — in a finally block on purpose: a crash in PACER
             # enrichment, pinkas or the summary must not swallow the alert for
             # leads that already crossed the bar earlier in this run.
@@ -704,65 +765,182 @@ a {{ color: #2c5282; }}
         except Exception as e:
             logger.error(f"_send_run_alerts error: {e}")
 
-    def _semantic_dedup(self, leads_for_deep: list) -> list:
+    # ── Stage-1 helpers ────────────────────────────────
+
+    def _raw_needs_stage1(self, raw: RawSource) -> bool:
         """
-        Compare each new lead against existing DB leads with stored embeddings
-        and against already-processed leads in this batch.  Returns only the
-        unique (non-duplicate) leads for deep analysis.
+        A saved source that never produced a lead. Checked by URL against leads
+        as well as raw.lead_id, because lead_id was never populated before this
+        fix — relying on it alone would re-classify the whole history.
         """
-        if not self.deduplicator.enabled:
+        if raw.lead_id is not None:
+            return False
+        return self.db.query(Lead.id).filter(Lead.source_url == raw.url).first() is None
+
+    def _stage1_retry_candidates(self) -> list:
+        """Leads whose Stage 1 failed technically and still have attempts left."""
+        from sqlalchemy import func
+        return (
+            self.db.query(Lead)
+            .filter(
+                Lead.relevance_score.is_(None),
+                Lead.stage1_error.isnot(None),
+                func.coalesce(Lead.stage1_attempts, 0) < MAX_STAGE1_ATTEMPTS,
+            )
+            .order_by(Lead.id)
+            .limit(STAGE1_RETRY_BATCH)
+            .all()
+        )
+
+    def _classify_safely(self, title: str, content: str, source_type: str) -> dict:
+        """
+        One item's classification failing must not take the run down with it.
+        Any ordinary exception becomes a Stage-1 error (NULL, retried).
+        """
+        try:
+            return self.analyzer.classify(title=title, content=content, source_type=source_type)
+        except Exception as e:
+            logger.error(f"  Stage 1 raised for '{title[:50]}': {e}")
+            return {"relevance_score": None, "stage1_error": f"exception: {e}"[:500]}
+
+    @staticmethod
+    def _apply_stage1(lead: Lead, c: dict) -> str:
+        """Write a Stage-1 result onto the lead. Returns pass | below_gate | error."""
+        lead.stage1_attempts = (lead.stage1_attempts or 0) + 1
+        score = c.get("relevance_score")
+        if c.get("stage1_error") or score is None:
+            lead.relevance_score = None
+            lead.stage1_error = c.get("stage1_error") or "no relevance_score returned"
+            return "error"
+        lead.stage1_error = None
+        lead.relevance_score = float(score)
+        lead.company = c.get("company", "") or ""
+        lead.sector = c.get("sector", "") or ""
+        lead.relevance_reasoning = c.get("reasoning", "") or ""
+        lead.operates_in_israel = c.get("operates_in_israel")
+        lead.product_available_in_israel = c.get("product_available_in_israel")
+        lead.israeli_class_size_estimate = c.get("israeli_class_size_estimate", "") or ""
+        lead.israeli_law_basis = c.get("israeli_law_basis", "") or ""
+        lead.estimated_class_size = c.get("estimated_class_size", "") or ""
+        return "pass" if lead.relevance_score >= MIN_RELEVANCE_SCORE else "below_gate"
+
+    @staticmethod
+    def _count_stage1(stats: dict, decision: str) -> None:
+        stats["stage1"]["classified"] += 1
+        key = {"pass": "passed", "below_gate": "below_gate", "error": "error"}[decision]
+        stats["stage1"][key] += 1
+
+    @staticmethod
+    def _log_stage1(ref: str, lead: Lead, decision: str) -> None:
+        title = (lead.title or "")[:60]
+        if decision == "pass":
+            logger.info(f"  ✓ {ref} [{lead.relevance_score}/10] {title} — pass (>= {MIN_RELEVANCE_SCORE})")
+        elif decision == "below_gate":
+            logger.info(f"  ✗ {ref} [{lead.relevance_score}/10] {title} — below gate (< {MIN_RELEVANCE_SCORE})")
+        else:
+            logger.warning(f"  ⚠ {ref} {title} — stage1 error, stored NULL for retry: {lead.stage1_error}")
+
+    @staticmethod
+    def _log_stage_counts(stats: dict) -> None:
+        st = stats
+        logger.info(
+            "STAGE COUNTS — "
+            f"scrape found={st['scrape']['found']} new={st['scrape']['new']} resumed={st['scrape']['resumed']} | "
+            f"stage1 classified={st['stage1']['classified']} passed={st['stage1']['passed']} "
+            f"below_gate={st['stage1']['below_gate']} error={st['stage1']['error']} retried={st['stage1']['retried']} | "
+            f"dedup in={st['dedup']['in']} unique={st['dedup']['unique']} merged={st['dedup']['merged']} "
+            f"review={st['dedup']['review']} | "
+            f"stage2 in={st['stage2']['in']} ok={st['stage2']['ok']} failed={st['stage2']['failed']} | "
+            f"stage3 in={st['stage3']['in']} ok={st['stage3']['ok']} failed={st['stage3']['failed']}"
+        )
+        if st["dedup"]["in"] and not st["dedup"]["unique"]:
+            logger.warning(
+                f"  ⚠ every lead that passed Stage 1 ({st['dedup']['in']}) was marked a duplicate "
+                f"— nothing reached Stage 2. Check the dedup decisions above."
+            )
+
+    # ── Semantic dedup ─────────────────────────────────
+
+    def _semantic_dedup(self, leads_for_deep: list, exclude_ids=None, stats: dict = None) -> list:
+        """
+        Decide, for each lead that passed Stage 1, whether it duplicates another
+        record. Returns only the leads that go on to Stage 2.
+
+        A lead is never compared with itself. Stage 1 commits its leads before
+        this runs, so the stored-lead indexes are built without `exclude_ids`
+        (every lead touched in this run); in-batch duplicates are caught against
+        earlier leads of the same batch, which are added to the indexes as they
+        are accepted.
+
+        Only leads that passed the relevance gate can absorb a newcomer — a
+        lead that was never analysed is not a canonical record.
+        """
+        exclude_ids = set(exclude_ids or ()) | {l.id for l, _, _ in leads_for_deep if l.id is not None}
+        stats = stats if stats is not None else {}
+        for k in ("in", "unique", "merged", "review"):
+            stats.setdefault(k, 0)
+        stats["in"] += len(leads_for_deep)
+        if not leads_for_deep:
+            return []
+
+        def _not_self(q):
+            return q.filter(Lead.id.notin_(exclude_ids)) if exclude_ids else q
+
+        enabled = self.deduplicator.enabled
+        if not enabled:
             logger.warning(
                 "Semantic dedup DISABLED (no VOYAGE_API_KEY / voyageai missing) — "
-                "new leads will NOT be embedded or clustered, so duplicates will "
-                "accumulate. Set VOYAGE_API_KEY on the web service to enable."
+                "identical-title duplicates are still caught, but new leads are "
+                "not embedded. Set VOYAGE_API_KEY on the web service to enable."
             )
-            return leads_for_deep
 
-        # Load previously stored embeddings once and build a vectorized index
+        # Stored embeddings (gate-passing, not this run) → vectorized index
         existing_with_embs = []
-        for db_lead in self.db.query(Lead).filter(Lead.embedding.isnot(None)).all():
-            try:
-                existing_with_embs.append((db_lead, json.loads(db_lead.embedding)))
-            except Exception:
-                pass
-        existing_index = self.deduplicator.build_index(existing_with_embs)
+        if enabled:
+            for db_lead in _not_self(self.db.query(Lead).filter(
+                Lead.embedding.isnot(None),
+                Lead.relevance_score >= MIN_RELEVANCE_SCORE,
+            )).all():
+                try:
+                    existing_with_embs.append((db_lead, json.loads(db_lead.embedding)))
+                except Exception:
+                    pass
+        existing_index = self.deduplicator.build_index(existing_with_embs) if existing_with_embs else None
 
-        # Exact-title index over existing canonical leads. Deliberately NOT
-        # restricted to embedded leads: the title rule is decided on text, so an
-        # unembedded canonical can still absorb an identical repost.
+        # Exact-title index over stored canonical, gate-passing leads (not this run)
         title_index = {}
-        for db_lead in self.db.query(Lead).filter(
-            (Lead.is_duplicate_of_known.is_(None)) | (Lead.is_duplicate_of_known == False)
-        ).all():
+        for db_lead in _not_self(self.db.query(Lead).filter(
+            (Lead.is_duplicate_of_known.is_(None)) | (Lead.is_duplicate_of_known == False),
+            Lead.relevance_score >= MIN_RELEVANCE_SCORE,
+        )).all():
             k = title_match_key(db_lead.title, db_lead.company)
             if k and k not in title_index:
                 title_index[k] = db_lead
 
-        # Batch-embed ALL new leads up front — one Voyage call per ~100 leads
-        # instead of one call per lead. The previous per-lead calls hit Voyage's
-        # free-tier rate limit (3 RPM); all but the first few threw and were
-        # silently swallowed, which is why 84% of leads ended up unembedded.
+        # Batch-embed all new leads up front (one Voyage call per ~100)
         texts = [
             f"{(l.company or '')} | {l.title} | {(l.israeli_law_basis or '')}"[:500]
             for l, _, _ in leads_for_deep
         ]
-        new_embs = self._embed_batched(texts)
+        new_embs = self._embed_batched(texts) if enabled else [[] for _ in texts]
 
         unique = []
-        batch_embs = []  # (lead, emb) for non-duplicate leads seen so far this batch
+        batch_embs = []  # (lead, emb) for accepted leads of this batch
         n_dup = 0
         n_dup_title = 0
         n_review = 0
 
+        def _accept(lead, tkey):
+            if tkey and tkey not in title_index:
+                title_index[tkey] = lead
+
         for (lead, item, classification), emb in zip(leads_for_deep, new_embs):
-            # Tier 0 — same headline, same company. Checked before the embedding
-            # tiers (and before the no-embedding bail-out) because it is decided
-            # on the text itself. The embedding text is
-            # "company | title | israeli_law_basis", so an identical title whose
-            # law-basis wording differs scores below AUTO_MERGE and would
-            # otherwise land in the manual review queue.
+            # Tier 0 — same headline, same company. Text-only, so it works with
+            # Voyage off or failing too.
             tkey = title_match_key(lead.title, lead.company)
             tmatch = title_index.get(tkey) if tkey else None
+            if tmatch is not None and tmatch.id == lead.id:
+                tmatch = None     # belt and braces: a record is never its own duplicate
             if tmatch is not None:
                 lead.is_duplicate_of_known = True
                 lead.dedup_group_id = tmatch.dedup_group_id or str(tmatch.id)
@@ -773,40 +951,41 @@ a {{ color: #2c5282; }}
                 lead.notes = (lead.notes + "\n" if lead.notes else "") + note
                 n_dup += 1
                 n_dup_title += 1
-                logger.info(f"  [DEDUP] merge-title {lead.title[:40]} = #{tmatch.id}")
+                logger.info(f"  [DEDUP] #{lead.id} duplicate of #{tmatch.id} — identical title + company")
                 continue
 
             if not emb:
-                # Embedding failed for this lead — keep it, but it stays unclustered
+                # No embedding (Voyage off or failed) — keep it, unclustered, but
+                # still let later identical titles in this batch merge into it.
                 unique.append((lead, item, classification))
+                _accept(lead, tkey)
+                logger.info(f"  [DEDUP] #{lead.id} unique (no embedding — unclustered)")
                 continue
 
-            # Best match against stored leads (vectorized) and this batch (small).
-            # deduplicator.threshold == REVIEW_THRESHOLD, so a match is returned
-            # for any similarity >= REVIEW; we tier it below.
+            # Best match against stored leads (vectorized) and this batch.
+            # deduplicator.threshold == REVIEW_THRESHOLD; tiered below.
             candidates = []
             if existing_index is not None:
-                m, s = self.deduplicator.find_duplicate_indexed(emb, existing_index)
+                m, sc = self.deduplicator.find_duplicate_indexed(emb, existing_index)
             else:
-                m, s = self.deduplicator.find_duplicate(emb, existing_with_embs)
-            if m:
-                candidates.append((s, m))
+                # No numpy -> pure-Python scan. Slower, but never silently skipped.
+                m, sc = self.deduplicator.find_duplicate(emb, existing_with_embs)
+            if m is not None and m.id != lead.id:
+                candidates.append((sc, m))
             mb, sb = self.deduplicator.find_duplicate(emb, batch_embs)
-            if mb:
+            if mb is not None and mb.id != lead.id:
                 candidates.append((sb, mb))
             score, match = max(candidates, key=lambda c: c[0]) if candidates else (0.0, None)
 
             if match is not None and score >= AUTO_MERGE_THRESHOLD:
-                # High confidence — auto-merge
                 lead.is_duplicate_of_known = True
                 lead.dedup_group_id = match.dedup_group_id or str(match.id)
                 lead.known_case_ref = match.title
                 note = f"🔁 כפילות של ליד #{match.id} (דמיון {score:.0%})"
                 lead.notes = (lead.notes + "\n" if lead.notes else "") + note
                 n_dup += 1
-                logger.info(f"  [DEDUP] merge {lead.title[:40]} ≈ {match.title[:40]} ({score:.0%})")
+                logger.info(f"  [DEDUP] #{lead.id} duplicate of #{match.id} — similarity {score:.0%}")
             elif match is not None and score >= REVIEW_THRESHOLD:
-                # Borderline — keep as its own lead but flag for manual review
                 lead.embedding = json.dumps(emb)
                 lead.dedup_group_id = str(lead.id)
                 lead.suspected_dup_of = match.id
@@ -814,18 +993,20 @@ a {{ color: #2c5282; }}
                 lead.dup_review = "pending"
                 unique.append((lead, item, classification))
                 batch_embs.append((lead, emb))
-                if tkey and tkey not in title_index:
-                    title_index[tkey] = lead
+                _accept(lead, tkey)
                 n_review += 1
-                logger.info(f"  [DEDUP] review {lead.title[:40]} ≈ {match.title[:40]} ({score:.0%})")
+                logger.info(f"  [DEDUP] #{lead.id} kept, flagged for review vs #{match.id} — similarity {score:.0%}")
             else:
                 lead.embedding = json.dumps(emb)
                 lead.dedup_group_id = str(lead.id)
                 unique.append((lead, item, classification))
                 batch_embs.append((lead, emb))
-                if tkey and tkey not in title_index:
-                    title_index[tkey] = lead
+                _accept(lead, tkey)
+                logger.info(f"  [DEDUP] #{lead.id} unique")
 
+        stats["unique"] += len(unique)
+        stats["merged"] += n_dup
+        stats["review"] += n_review
         commit_with_retry(self.db)
         n_embedded = sum(1 for e in new_embs if e)
         logger.info(

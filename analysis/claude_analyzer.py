@@ -58,18 +58,30 @@ class AnalysisError(RuntimeError):
     """
 
 
+# Every field the classify prompt asks for. additionalProperties is false, so a
+# field missing here is silently dropped by structured outputs — that is how
+# product_available_in_israel was being lost. The prompt allows null ("unknown")
+# for the two booleans; the schema must too, or the model is forced to guess.
+_NULLABLE_BOOL = {"anyOf": [{"type": "boolean"}, {"type": "null"}]}
+
 _CLASSIFY_SCHEMA = {
     "type": "object",
     "properties": {
         "relevance_score": {"type": "number"},
         "company": {"type": "string"},
         "sector": {"type": "string"},
-        "reasoning": {"type": "string"},
-        "operates_in_israel": {"type": "boolean"},
+        "operates_in_israel": _NULLABLE_BOOL,
+        "product_available_in_israel": _NULLABLE_BOOL,
+        "israeli_class_size_estimate": {"type": "string"},
         "israeli_law_basis": {"type": "string"},
         "estimated_class_size": {"type": "string"},
+        "reasoning": {"type": "string"},
     },
-    "required": ["relevance_score", "company", "reasoning"],
+    "required": [
+        "relevance_score", "company", "sector", "operates_in_israel",
+        "product_available_in_israel", "israeli_class_size_estimate",
+        "israeli_law_basis", "estimated_class_size", "reasoning",
+    ],
     "additionalProperties": False,
 }
 
@@ -149,6 +161,16 @@ class ClaudeAnalyzer:
     # ── Stage 1: Classification ────────────────────────
 
     def classify(self, title: str, content: str, source_type: str) -> dict:
+        """
+        Stage 1. Returns the validated classification with stage1_error=None, or
+        {"relevance_score": None, "stage1_error": "..."} when no trustworthy
+        verdict was produced (API error, truncation, unparseable or invalid
+        output).
+
+        A technical failure must never come back as relevance_score=0: a 0 is
+        stored like a real "not relevant" verdict, falls under the gate and is
+        never looked at again. NULL + stage1_error keeps it retryable.
+        """
         prompt = _load_prompt("classify")
         user_msg = prompt.format(
             title=title,
@@ -159,16 +181,44 @@ class ClaudeAnalyzer:
         try:
             result = self._request_json(
                 user_msg, MAX_TOKENS_CLASSIFY, _CLASSIFY_SCHEMA,
-                label=f"classify '{title[:50]}'", required=("relevance_score",),
+                label=f"classify '{title[:50]}'",
+                required=("relevance_score", "reasoning"),
             )
-            result["relevance_score"] = self._to_float(result.get("relevance_score", 0))
+            result = self._validate_classification(result, label=f"classify '{title[:50]}'")
             logger.debug(f"Classification result: {result.get('relevance_score')} - {result.get('company')}")
             return result
         except AnalysisError as e:
-            # Stage 1 keeps its contract (score 0 skips deep analysis) but the
-            # failure is now loud rather than a silent zero.
-            logger.error(f"Classification failed — item skipped: {e}")
-            return {"relevance_score": 0, "error": str(e)}
+            logger.error(f"Stage 1 failed — stored as NULL with error, retryable: {e}")
+            return {"relevance_score": None, "stage1_error": str(e)[:500]}
+
+    @staticmethod
+    def _validate_classification(result: dict, label: str = "classify") -> dict:
+        """
+        Accept a Stage-1 answer only if it is a real verdict. Raises AnalysisError
+        otherwise, so the caller stores NULL + error instead of a number.
+        """
+        if result.get("parse_degraded"):
+            raise AnalysisError(f"{label}: JSON unparseable; regex-recovered fields are not trusted")
+
+        score = result.get("relevance_score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            raise AnalysisError(f"{label}: relevance_score is not a number: {score!r}")
+        if not 1 <= float(score) <= 10:
+            raise AnalysisError(f"{label}: relevance_score {score!r} outside the 1-10 scale")
+
+        reasoning = result.get("reasoning")
+        if not isinstance(reasoning, str) or not reasoning.strip():
+            raise AnalysisError(f"{label}: empty reasoning — not a verdict")
+
+        # "Unknown" is a legitimate answer for these; anything that is not a
+        # boolean is normalised to None rather than guessed.
+        for f in ("operates_in_israel", "product_available_in_israel"):
+            if not isinstance(result.get(f), bool):
+                result[f] = None
+
+        result["relevance_score"] = float(score)
+        result["stage1_error"] = None
+        return result
 
     # ── Stage 2: Deep legal analysis ───────────────────
 

@@ -40,6 +40,14 @@ class Lead(Base):
     operates_in_israel = Column(Boolean)
     israeli_law_basis = Column(Text)       # e.g. "חוק הגנת הצרכן סעיף 2"
     estimated_class_size = Column(String(50))
+    product_available_in_israel = Column(Boolean)   # None = unknown (prompt allows it)
+    israeli_class_size_estimate = Column(String(255))
+
+    # Stage-1 technical failure (API error, truncation, invalid output) — kept
+    # apart from a real low verdict. relevance_score stays NULL and the lead is
+    # retried up to MAX_STAGE1_ATTEMPTS; a stored 0 would never be revisited.
+    stage1_error = Column(Text)
+    stage1_attempts = Column(Integer, default=0)
 
     # Deep analysis (stage 2, only if relevance >= threshold)
     legal_analysis = Column(Text)
@@ -184,6 +192,10 @@ def _run_migrations(engine) -> None:
         ("embedding",            "TEXT"),
         ("dedup_group_id",       "TEXT"),
         ("alerted_at",           "DATETIME"),
+        ("product_available_in_israel", "INTEGER"),
+        ("israeli_class_size_estimate", "TEXT"),
+        ("stage1_error",         "TEXT"),
+        ("stage1_attempts",      "INTEGER"),
     ]
     with engine.connect() as conn:
         for col, dtype in new_cols:

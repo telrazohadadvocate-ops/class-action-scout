@@ -900,13 +900,19 @@ a {{ color: #2c5282; }}
                 "not embedded. Set VOYAGE_API_KEY on the web service to enable."
             )
 
-        # Stored embeddings (gate-passing, not this run) → vectorized index
+        # Stored embeddings (gate-passing, not this run) → vectorized index.
+        # A stored DUPLICATE whose group is one of the leads being decided here
+        # is skipped: matching it would make the lead a duplicate of its own
+        # duplicate — a loop with no canonical, so both disappear.
+        excluded_groups = {str(i) for i in exclude_ids}
         existing_with_embs = []
         if enabled:
             for db_lead in _not_self(self.db.query(Lead).filter(
                 Lead.embedding.isnot(None),
                 Lead.relevance_score >= MIN_RELEVANCE_SCORE,
             )).all():
+                if db_lead.is_duplicate_of_known and (db_lead.dedup_group_id or "") in excluded_groups:
+                    continue
                 try:
                     existing_with_embs.append((db_lead, json.loads(db_lead.embedding)))
                 except Exception:

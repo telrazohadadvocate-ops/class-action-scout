@@ -54,16 +54,16 @@ class Analyzer:
                 "already_filed_il": False, "already_filed_details": ""}
 
 V = [1.0] + [0.0] * 15
+def _vec_for(t):
+    h = hashlib.sha256(t.encode()).digest()
+    return [0.0] + [(b / 255.0) - 0.5 for b in h[:15]]
 def dedup():
     d = SemanticDeduplicator(api_key="", threshold=REVIEW_THRESHOLD)
     d._client = object()
     def batch(texts):
         out = []
         for i, t in enumerate(texts):
-            if "reworded" in t: out.append(V)
-            else:
-                h = hashlib.sha256(t.encode()).digest()   # deterministic, near-orthogonal
-                out.append([0.0] + [(b / 255.0) - 0.5 for b in h[:15]])
+            out.append(V if "reworded" in t else _vec_for(t))   # deterministic
         return out
     d.compute_embeddings_batch = batch
     return d
@@ -95,6 +95,14 @@ def build():
     add("I", title="Genuine dup", company="Eps", relevance_score=6.0, is_duplicate_of_known=True,
         dedup_group_id=str(ids["C"]), notes=SELF.format(ids["C"]))
     selfdup("J", title="Below gate self dup", company="Omega", relevance_score=3.0)
+    # Production pattern (#2868/#2890): the same headline ingested twice in one
+    # run. S matched itself; T matched S — a genuine duplicate pointing at S,
+    # with a stored embedding nearly identical to S's.
+    selfdup("S", title="Anticompetitive friction story", company="Goog", relevance_score=7.0)
+    add("T", title="Anticompetitive friction story", company="Goog", relevance_score=7.0,
+        is_duplicate_of_known=True, dedup_group_id=str(ids["S"]),
+        known_case_ref="Anticompetitive friction story", notes=SELF.format(ids["S"]),
+        embedding=json.dumps(_vec_for("Goog | Anticompetitive friction story | ")))
     db.commit()
     return db, ids
 
@@ -110,7 +118,7 @@ print("\n1. dry run")
 db, ids = build()
 before = snap(db)
 s = R.run(db, analyzer=None, deduplicator=dedup(), dry_run=True, log=quiet)
-check("finds the 6 self-duplicates (not the manual one, not the genuine one)", s["self_duplicates"] == 6)
+check("finds the 7 self-duplicates (not the manual one, not the genuine ones)", s["self_duplicates"] == 7)
 check("database unchanged", snap(db) == before)
 
 # ── full run ────────────────────────────────────────────────────────────
@@ -135,12 +143,18 @@ check("F analysed, G merged into F",
 check("J unmerged only (below gate)", not L("J").is_duplicate_of_known and L("J").strength_score is None)
 check("H (manual) untouched", L("H").dup_review == "separate" and L("H").is_duplicate_of_known)
 check("I (genuine) untouched", L("I").dedup_group_id == str(ids["C"]))
-check("exactly A and F went to Stage 2", sorted(a.analyzed) == sorted([L("A").title, L("F").title]))
+check("S restored as canonical — not merged into its own duplicate T",
+      not L("S").is_duplicate_of_known and L("S").strength_score == 6.0)
+check("T stays a duplicate pointing at S's group",
+      L("T").is_duplicate_of_known and L("T").dedup_group_id == str(ids["S"])
+      and L("S").dedup_group_id == str(ids["S"]))
+check("exactly A, F and S went to Stage 2",
+      sorted(a.analyzed) == sorted([L("A").title, L("F").title, L("S").title]))
 self_refs = [l.id for l in db.query(Lead) if l.is_duplicate_of_known and l.dedup_group_id == str(l.id)
              and l.dup_review not in ("merged", "separate")]
 check("no record is a duplicate of itself", self_refs == [])
-check("alert cap: 1 left un-alerted, the other stamped",
-      s["alert_kept"] == 1 and s["alert_suppressed"] == 1)
+check("alert cap: 1 left un-alerted, the others stamped",
+      s["alert_kept"] == 1 and s["alert_suppressed"] == 2)
 
 # ── resumable ───────────────────────────────────────────────────────────
 print("\n3. resumable after a Stage-2 failure")

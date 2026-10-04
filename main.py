@@ -10,6 +10,7 @@ Usage:
   python main.py --report --days 30 --format html   # HTML report
 """
 import os
+import re
 import json
 import logging
 import argparse
@@ -50,6 +51,26 @@ from registry.pinkas_checker import PinkasChecker
 # and retried on later runs, at most this many classification attempts in total.
 MAX_STAGE1_ATTEMPTS = 3
 STAGE1_RETRY_BATCH = 50      # bound the retry spend per run
+
+# Words that say nothing about WHICH matter a known firm case is. Matching on
+# them flagged every Meta article containing "class action" and every Google
+# article (the word "google") as the firm's own case — and the flag hides a
+# lead from alerts.
+_KNOWN_CASE_GENERIC = {
+    "class", "action", "actions", "settlement", "approved", "lawsuit", "suit",
+    "claim", "claims", "case", "violations", "parallel", "exclusion",
+}
+
+
+def _known_case_topic_words(topic: str, company: str) -> list:
+    """Distinctive topic words of a KNOWN_CASES entry (punctuation stripped,
+    generic legal words and the company's own name removed)."""
+    company_words = set(re.findall(r"[a-z0-9]+", company.lower()))
+    out = []
+    for w in re.findall(r"[a-z0-9][a-z0-9\-]*", topic.lower()):
+        if len(w) >= 3 and w not in _KNOWN_CASE_GENERIC and w not in company_words and w not in out:
+            out.append(w)
+    return out
 
 
 class ClassActionScout:
@@ -259,23 +280,7 @@ class ClassActionScout:
                         logger.error(f"  ✗ #{lead.id} Stage 2 failed — left unscored: {e}")
                         continue
 
-                    lead.legal_analysis = analysis.get("legal_analysis", "")
-                    lead.strength_score = analysis.get("strength_score", 0)
-                    lead.priority = analysis.get("priority", "low")
-                    lead.recommended_action = analysis.get("recommended_action", "")
-                    lead.comparable_cases = json.dumps(
-                        analysis.get("comparable_cases", []), ensure_ascii=False
-                    )
-                    # Already-filed detection (conservative — see legal_analysis prompt)
-                    lead.already_filed_il = bool(analysis.get("already_filed_il", False))
-                    lead.already_filed_details = analysis.get("already_filed_details", "") or ""
-
-                    # Check against known cases
-                    lead.is_duplicate_of_known = self._check_known_cases(lead)
-
-                    # Check expertise match
-                    lead.matches_expertise = self._check_expertise(lead)
-
+                    self._apply_stage2(lead, analysis)
                     leads_scored.append(lead)
                     stats["stage2"]["ok"] += 1
 
@@ -861,7 +866,8 @@ a {{ color: #2c5282; }}
 
     # ── Semantic dedup ─────────────────────────────────
 
-    def _semantic_dedup(self, leads_for_deep: list, exclude_ids=None, stats: dict = None) -> list:
+    def _semantic_dedup(self, leads_for_deep: list, exclude_ids=None, stats: dict = None,
+                        commit: bool = True) -> list:
         """
         Decide, for each lead that passed Stage 1, whether it duplicates another
         record. Returns only the leads that go on to Stage 2.
@@ -1007,7 +1013,8 @@ a {{ color: #2c5282; }}
         stats["unique"] += len(unique)
         stats["merged"] += n_dup
         stats["review"] += n_review
-        commit_with_retry(self.db)
+        if commit:
+            commit_with_retry(self.db)
         n_embedded = sum(1 for e in new_embs if e)
         logger.info(
             f"Dedup: {len(unique)} unique, {n_dup} auto-merged "
@@ -1055,6 +1062,24 @@ a {{ color: #2c5282; }}
                 time.sleep(2)  # small politeness gap between chunks
         return out
 
+    def _apply_stage2(self, lead: Lead, analysis: dict) -> None:
+        """Write a Stage-2 result onto the lead (shared by run() and the restore script)."""
+        lead.legal_analysis = analysis.get("legal_analysis", "")
+        lead.strength_score = analysis.get("strength_score", 0)
+        lead.priority = analysis.get("priority", "low")
+        lead.recommended_action = analysis.get("recommended_action", "")
+        lead.comparable_cases = json.dumps(
+            analysis.get("comparable_cases", []), ensure_ascii=False
+        )
+        # Already-filed detection (conservative — see legal_analysis prompt)
+        lead.already_filed_il = bool(analysis.get("already_filed_il", False))
+        lead.already_filed_details = analysis.get("already_filed_details", "") or ""
+        # Firm known cases, then expertise
+        lead.is_duplicate_of_known = self._check_known_cases(lead)
+        if lead.is_duplicate_of_known:
+            logger.info(f"  [KNOWN] #{lead.id} matches firm case: {lead.known_case_ref}")
+        lead.matches_expertise = self._check_expertise(lead)
+
     def _check_known_cases(self, lead: Lead) -> bool:
         """
         Check if this lead matches a case the firm already knows about.
@@ -1076,11 +1101,11 @@ a {{ color: #2c5282; }}
             if known_company not in company_lower and company_lower not in known_company:
                 continue
 
-            # If company matches, check if topic also overlaps
             if known_topic:
-                topic_words = [w for w in known_topic.split() if len(w) > 3]
-                topic_match = any(w in lead_text for w in topic_words)
-                if topic_match:
+                words = _known_case_topic_words(known_topic, known_company)
+                hits = [w for w in words if re.search(rf"\b{re.escape(w)}\b", lead_text)]
+                need = min(2, len(words))
+                if words and len(hits) >= need:
                     lead.known_case_ref = known["name"]
                     return True
                 # Company matches but topic is different — NOT a duplicate

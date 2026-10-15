@@ -12,6 +12,7 @@ Usage:
 import os
 import re
 import sys
+import html as _html
 import json
 import logging
 import argparse
@@ -818,8 +819,10 @@ a {{ color: #2c5282; }}
             "pending_retry": self.db.query(Lead).filter(
                 Lead.relevance_score.is_(None), Lead.stage1_error.isnot(None),
                 func.coalesce(Lead.stage1_attempts, 0) < MAX_STAGE1_ATTEMPTS).count(),
-            "top": [{"title": (l.title or "")[:110], "company": l.company or "",
-                     "score": round(l.priority_score, 1), "israel": l.israel_applicable}
+            "top": [{"title": _html.unescape(l.title or "")[:110], "company": l.company or "",
+                     "score": round(l.priority_score, 1),
+                     "strength": (round(l.strength_score, 1) if l.strength_score is not None else None),
+                     "israel": l.israel_applicable}
                     for l in top],
         }
 

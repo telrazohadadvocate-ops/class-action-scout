@@ -119,7 +119,9 @@ _WRAP = """<!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="UTF-8">
 
 
 def _esc(x) -> str:
-    return _html.escape(str(x if x is not None else ""))
+    # Scraped titles often arrive already HTML-encoded (&quot;); decode once
+    # first so they are not shown as literal "&quot;" in the email.
+    return _html.escape(_html.unescape(str(x if x is not None else "")))
 
 
 def _issue_list(issues) -> str:
@@ -181,12 +183,16 @@ def build_digest_email(d: dict, issues, now_utc):
     top = ""
     if d["top"]:
         lis = "".join(
-            f'<li style="margin-bottom:8px;"><b>{_esc(t["score"])}</b> · '
+            f'<li style="margin-bottom:8px;"><b>עדיפות {_esc(t["score"])}</b>'
+            + (f' · חוזק {_esc(t["strength"])}' if t.get("strength") is not None else '')
+            + ' · '
             f'<bdi>{_esc(t["company"])}</bdi> — <bdi>{_esc(t["title"])}</bdi>'
             + (' <span style="color:#7B8099;">(לא ישים בישראל)</span>' if t["israel"] is False else '')
             + '</li>'
             for t in d["top"])
         top = ('<h3 style="margin:20px 0 6px;font-size:15px;color:#1A1D2E;">המובילים ב-24 השעות האחרונות</h3>'
+               '<p style="margin:0 0 6px;font-size:12px;color:#7B8099;">עדיפות = הציון שקובע אם ליד הוא חם (סף '
+               f'{d["threshold"]:g}); חוזק = הערכת חוזק הטענה המשפטית, כפי שמופיע במייל ההתראה.</p>'
                f'<ol style="margin:0;padding-right:18px;font-size:14px;color:#1A1D2E;">{lis}</ol>')
     else:
         top = '<p style="margin:16px 0 0;font-size:14px;color:#4A5068;">לא נותחו לידים חדשים ב-24 השעות האחרונות.</p>'

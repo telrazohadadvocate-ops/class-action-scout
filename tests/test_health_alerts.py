@@ -207,5 +207,18 @@ s, f = make(items(2, "g")); s.run(skip_pinkas=True)
 os.environ.pop("DAILY_DIGEST_ENABLED")
 check("no summary when disabled", SENT == [])
 
+# ── 8. digest rendering ───────────────────────────────────────────────
+print("\n8. digest rendering")
+d = {"new": 1, "classified": 1, "passed": 1, "scored": 1, "hot": 1, "threshold": 7.0,
+     "pending_retry": 0,
+     "top": [{"title": '&quot;תלויים בין שמיים לארץ&quot;: בקשה', "company": "flydubai",
+              "score": 8.8, "strength": 7.5, "israel": True}]}
+_, h = health.build_digest_email(d, [], datetime(2026, 10, 15, 9, 0, tzinfo=timezone.utc))
+check("HTML entity in a scraped title is not shown as &quot;", "&amp;quot;" not in h)
+check("priority and strength are both labelled", "עדיפות 8.8" in h and "חוזק 7.5" in h)
+s, f = make([Item(url="http://x/q", title="&quot;Quoted&quot; title")]); s.run(skip_pinkas=True)
+dg = s._collect_digest(datetime.now(timezone.utc))
+check("collected title is unescaped once", dg["top"] and dg["top"][0]["title"] == '"Quoted" title')
+
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILURE(S)"))
 sys.exit(1 if FAILURES else 0)

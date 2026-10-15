@@ -165,6 +165,20 @@ def build_health_email(issues, stats, now_utc):
     return subject, _WRAP.format(body=body, url=DASHBOARD_URL)
 
 
+def _lead_list(items, tag="ol") -> str:
+    lis = "".join(
+        f'<li style="margin-bottom:8px;"><b>עדיפות {_esc(t["score"])}</b>'
+        + (f' · חוזק {_esc(t["strength"])}' if t.get("strength") is not None else '')
+        + ' · '
+        f'<bdi>{_esc(t["company"])}</bdi> — '
+        + (f'<a href="{DASHBOARD_URL}/?lead={int(t["id"])}" style="color:#1A1D2E;"><bdi>{_esc(t["title"])}</bdi></a>'
+           if t.get("id") else f'<bdi>{_esc(t["title"])}</bdi>')
+        + (' <span style="color:#7B8099;">(לא ישים בישראל)</span>' if t.get("israel") is False else '')
+        + '</li>'
+        for t in items)
+    return f'<{tag} style="margin:0;padding-right:18px;font-size:14px;color:#1A1D2E;">{lis}</{tag}>'
+
+
 def build_digest_email(d: dict, issues, now_utc):
     """d comes from ClassActionScout._collect_digest."""
     date_str = now_utc.astimezone(LOCAL_TZ).strftime("%d/%m/%Y")
@@ -182,25 +196,22 @@ def build_digest_email(d: dict, issues, now_utc):
     ]
     top = ""
     if d["top"]:
-        lis = "".join(
-            f'<li style="margin-bottom:8px;"><b>עדיפות {_esc(t["score"])}</b>'
-            + (f' · חוזק {_esc(t["strength"])}' if t.get("strength") is not None else '')
-            + ' · '
-            f'<bdi>{_esc(t["company"])}</bdi> — '
-            + (f'<a href="{DASHBOARD_URL}/?lead={int(t["id"])}" style="color:#1A1D2E;"><bdi>{_esc(t["title"])}</bdi></a>'
-               if t.get("id") else f'<bdi>{_esc(t["title"])}</bdi>')
-            + (' <span style="color:#7B8099;">(לא ישים בישראל)</span>' if t["israel"] is False else '')
-            + '</li>'
-            for t in d["top"])
         top = ('<h3 style="margin:20px 0 6px;font-size:15px;color:#1A1D2E;">המובילים ב-24 השעות האחרונות</h3>'
                '<p style="margin:0 0 6px;font-size:12px;color:#7B8099;">עדיפות = הציון שקובע אם ליד הוא חם (סף '
                f'{d["threshold"]:g}); חוזק = הערכת חוזק הטענה המשפטית, כפי שמופיע במייל ההתראה.</p>'
-               f'<ol style="margin:0;padding-right:18px;font-size:14px;color:#1A1D2E;">{lis}</ol>')
+               + _lead_list(d["top"], "ol"))
     else:
         top = '<p style="margin:16px 0 0;font-size:14px;color:#4A5068;">לא נותחו לידים חדשים ב-24 השעות האחרונות.</p>'
+    near = ""
+    if d.get("near"):
+        near = (f'<h3 style="margin:20px 0 6px;font-size:15px;color:#1A1D2E;">קרובים לסף '
+                f'({d.get("near_floor", 6.0):g} עד מתחת ל-{d["threshold"]:g})</h3>'
+                '<p style="margin:0 0 6px;font-size:12px;color:#7B8099;">לא נשלחה עליהם התראה. כדאי להעיף מבט, '
+                'ולסמן בדשבורד "ליד בשבילנו?" — זה משפר את המדידה.</p>'
+                + _lead_list(d["near"], "ul"))
     body = (
         f'<h2 style="margin:0 0 12px;font-size:20px;color:#1A1D2E;">סיכום יומי — {date_str}</h2>'
-        + status + _counts_table(rows) + top
+        + status + _counts_table(rows) + top + near
     )
     hot = d["hot"]
     subject = (f"Scout — סיכום יומי {date_str}"

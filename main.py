@@ -38,6 +38,7 @@ logger = logging.getLogger("scout")
 from config.settings import (
     ANTHROPIC_API_KEY, CLAUDE_MODEL, DATABASE_URL, DATABASE_PATH,
     MIN_RELEVANCE_SCORE, HIGH_PRIORITY_THRESHOLD,
+    PREVIOUS_HIGH_PRIORITY_THRESHOLD, HIGH_PRIORITY_THRESHOLD_SINCE, NEAR_HOT_FLOOR,
     SCRAPE_DELAY_SECONDS, SOURCES, FIRM_EXPERTISE, KNOWN_CASES,
     VOYAGE_API_KEY, DEDUP_THRESHOLD, AUTO_MERGE_THRESHOLD, REVIEW_THRESHOLD,
 )
@@ -743,10 +744,13 @@ a {{ color: #2c5282; }}
         from database.models import AlertLog
 
         try:
+            since = datetime.strptime(HIGH_PRIORITY_THRESHOLD_SINCE, "%Y-%m-%d")
             pending = (
                 self.db.query(Lead)
                 .filter(
                     Lead.priority_score >= HIGH_PRIORITY_THRESHOLD,
+                    # backlog guard: older leads only at the old bar
+                    (Lead.priority_score >= PREVIOUS_HIGH_PRIORITY_THRESHOLD) | (Lead.scraped_at >= since),
                     Lead.alerted_at.is_(None),
                     (Lead.is_duplicate_of_known.is_(None)) | (Lead.is_duplicate_of_known == False),
                 )
@@ -806,9 +810,20 @@ a {{ color: #2c5282; }}
         from sqlalchemy import func
         since = (now_utc - timedelta(hours=24)).replace(tzinfo=None)
         win = self.db.query(Lead).filter(Lead.scraped_at >= since)
-        top = (win.filter(Lead.priority_score.isnot(None),
-                          (Lead.is_duplicate_of_known.is_(None)) | (Lead.is_duplicate_of_known == False))
+        not_dup = (Lead.is_duplicate_of_known.is_(None)) | (Lead.is_duplicate_of_known == False)
+        top = (win.filter(Lead.priority_score.isnot(None), not_dup)
                .order_by(Lead.priority_score.desc()).limit(5).all())
+        top_ids = [l.id for l in top] or [-1]
+        near = (win.filter(Lead.priority_score >= NEAR_HOT_FLOOR,
+                           Lead.priority_score < HIGH_PRIORITY_THRESHOLD,
+                           not_dup, ~Lead.id.in_(top_ids))
+                .order_by(Lead.priority_score.desc()).limit(10).all())
+
+        def card(l):
+            return {"id": l.id, "title": _html.unescape(l.title or "")[:110], "company": l.company or "",
+                    "score": round(l.priority_score, 1),
+                    "strength": (round(l.strength_score, 1) if l.strength_score is not None else None),
+                    "israel": l.israel_applicable}
         return {
             "new": win.count(),
             "classified": win.filter(Lead.relevance_score.isnot(None)).count(),
@@ -819,11 +834,9 @@ a {{ color: #2c5282; }}
             "pending_retry": self.db.query(Lead).filter(
                 Lead.relevance_score.is_(None), Lead.stage1_error.isnot(None),
                 func.coalesce(Lead.stage1_attempts, 0) < MAX_STAGE1_ATTEMPTS).count(),
-            "top": [{"id": l.id, "title": _html.unescape(l.title or "")[:110], "company": l.company or "",
-                     "score": round(l.priority_score, 1),
-                     "strength": (round(l.strength_score, 1) if l.strength_score is not None else None),
-                     "israel": l.israel_applicable}
-                    for l in top],
+            "top": [card(l) for l in top],
+            "near": [card(l) for l in near],
+            "near_floor": float(NEAR_HOT_FLOOR),
         }
 
     def _send_health_and_digest(self, stats: dict) -> None:

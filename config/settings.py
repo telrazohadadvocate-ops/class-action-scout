@@ -70,7 +70,19 @@ OUTLOOK_USER_EMAIL = os.getenv("OUTLOOK_USER_EMAIL", "Ohad@levin-telraz.co.il")
 
 # ── Scoring thresholds ─────────────────────────────────
 MIN_RELEVANCE_SCORE = 4        # 1-10; below this → skip deep analysis
-HIGH_PRIORITY_THRESHOLD = 7    # above this → immediate alert
+# Alert threshold. Lowered from 7 to 6.5 on 15.10.2026 after the gold-set eval:
+# the good leads cluster at 6.5–6.9 (a medium-confidence value estimate caps the
+# score at 8), so at 7 the alert hinged on run-to-run noise in strength_score.
+# At 6.5 the eval caught 10/21 wanted leads with 1 unwanted alert (was 8/21 at 7
+# before the business-class prompt, 4/21 after). Re-check with scripts/run_eval.py.
+HIGH_PRIORITY_THRESHOLD = 6.5  # at or above this → immediate alert
+# Leads scraped before the threshold moved keep the old bar, so lowering it does
+# not mail out months of 6.5–6.9 backlog in one go.
+PREVIOUS_HIGH_PRIORITY_THRESHOLD = 7
+HIGH_PRIORITY_THRESHOLD_SINCE = "2026-10-15"
+# Daily summary also lists leads in [NEAR_HOT_FLOOR, HIGH_PRIORITY_THRESHOLD) —
+# shown, never alerted.
+NEAR_HOT_FLOOR = 6.0
 SCRAPE_DELAY_SECONDS = 3.0     # polite delay between HTTP requests
 
 # ── Scheduling ─────────────────────────────────────────

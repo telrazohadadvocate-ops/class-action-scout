@@ -17,6 +17,9 @@ Perform a thorough legal analysis under Israeli law. Consider:
    - חוק ההגבלים העסקיים, תשמ"ח-1988 (Antitrust Law) — for marketplace/competition claims
 
 2. CERTIFICATION PROSPECTS — Assess likelihood of בקשת אישור succeeding:
+   - The class may be BUSINESS customers (advertisers, app developers, marketplace
+     sellers, small businesses, creators), not only private consumers. Assess such a class
+     on the same merits; do not lower strength_score for that reason alone.
    - Common questions of fact/law across the class
    - Superiority of class action mechanism
    - Adequate representation

@@ -14,6 +14,10 @@ The firm has expertise in:
 - Automotive defects — fuel/range misrepresentation, safety defects, recall failures
 - Banking/financial — overdraft fees, credit card charges, undisclosed costs
 - E-commerce — Buy Box manipulation, pricing transparency, marketplace practices
+- Business customers of platforms — advertisers, app developers, marketplace sellers,
+  small businesses and content creators harmed by a platform's pricing, fees, auction
+  mechanics, terms or use of their data/content (e.g. ad-auction overcharges, app-store
+  commissions, works used to train AI models). The firm has filed such cases in Israel.
 
 CRITICAL EVALUATION CRITERIA:
 1. It is NOT enough that the company operates in Israel generally.
@@ -26,11 +30,21 @@ CRITICAL EVALUATION CRITERIA:
 
 2. The potential CLASS SIZE in Israel must be meaningful (at least thousands).
    A product used by only dozens of Israelis is not worth pursuing.
+   For a class of BUSINESSES (advertisers, sellers, developers, creators), hundreds of
+   Israeli members can be meaningful when the harm per member is substantial.
 
-3. Consider whether Israeli consumers were EXCLUDED from a US settlement.
+3. The harmed class does NOT have to be private consumers. An Israeli class action can be
+   brought for any CUSTOMER (לקוח) of a business, including other businesses, and on
+   antitrust grounds. Do NOT lower the score just because the people harmed are
+   advertisers, app developers, marketplace sellers, small businesses or authors/creators
+   rather than individual consumers. Judge them by the same tests: is the specific
+   service used by Israelis (e.g. Israeli advertisers on Amazon Ads, Israeli developers on
+   the App Store), how many, and is there a plausible cause of action.
+
+4. Consider whether Israeli consumers were EXCLUDED from a US settlement.
    If excluded — this creates an opportunity. If included — no need to file separately.
 
-4. US case dismissal signals:
+5. US case dismissal signals:
    - VOLUNTARY DISMISSAL by plaintiff = NEGATIVE signal. The plaintiff gave up; this suggests the case
      was weak, the claims were flawed, or a private deal was reached. Do NOT treat as an opportunity.
    - DISMISSED WITH PREJUDICE = case dead on the merits. Do NOT pursue.
@@ -45,14 +59,14 @@ Respond ONLY with a JSON object (no markdown, no explanation):
   "sector": "<industry sector>",
   "operates_in_israel": <true/false/null if unknown>,
   "product_available_in_israel": <true/false/null — is the SPECIFIC product/service in the lawsuit available in Israel?>,
-  "israeli_class_size_estimate": "<estimated number of affected Israeli consumers>",
+  "israeli_class_size_estimate": "<estimated number of affected Israeli consumers or business customers>",
   "israeli_law_basis": "<applicable Israeli statute or 'none identified'>",
   "estimated_class_size": "<rough estimate in Hebrew: 'אלפים', 'עשרות אלפים', 'מאות אלפים', 'מיליונים'>",
   "reasoning": "<2-3 sentence Hebrew explanation — MUST address whether the specific product/service is used in Israel>"
 }}
 
 SCORING GUIDE:
-- 9-10: Specific product/service actively used by many Israelis, clear legal basis, large class
+- 9-10: Specific product/service actively used by many Israelis (consumers or businesses), clear legal basis, large class
 - 7-8: Product likely available in Israel, plausible legal basis, significant class
 - 5-6: Company operates in Israel but product availability uncertain, needs research
 - 3-4: Company known but specific product/service NOT common in Israel

@@ -238,6 +238,7 @@ FIRM_EXPERTISE = [
     "privacy violations / tracking pixels / data sharing",
     "currency conversion markups / hidden fees",
     "e-commerce platform abuse (Buy Box, pricing)",
+    "advertisers / app developers / marketplace sellers",
     "banking fees / overdraft / credit card charges",
     "construction defects / contractor disputes",
     "labor law violations / extension orders",

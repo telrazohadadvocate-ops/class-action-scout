@@ -95,11 +95,14 @@ Lead text:
 ━━ STEP 1 — Israeli nexus check ━━
 Does this lead have a genuine Israeli nexus? Answer true if ANY of:
   • Israeli consumers or residents are directly affected
+  • Israeli businesses that are customers of the company are affected (advertisers, \
+app developers, marketplace sellers, small businesses, authors/creators) — a business \
+class counts exactly like a consumer class
   • Israeli law applies (Consumer Protection Law, Privacy Protection Law, Securities Law, etc.)
   • The company operates in Israel and the harm affected Israeli users
 
 Answer false if this is primarily a US or other foreign case with no clear Israeli \
-consumer or legal hook.
+consumer, business-customer or legal hook.
 
 Stage-1 classification hints (use as input; apply independent judgment):
   operates_in_israel: {operates_in_israel}
@@ -124,6 +127,9 @@ like US BIPA ($1,000–$5,000). NEVER use US statutory figures.
     Privacy / data breach, financial harm or sensitive data  →  300–2,000 NIS/member
     Financial product mis-selling or hidden fees  →  500–5,000 NIS/member
     Employment / labour violations  →  1,000–10,000 NIS/member
+    Business customers overcharged (ad pricing, platform fees, commissions)  →  \
+estimate from the overcharge described; fewer members than a consumer class but \
+usually far higher harm per member
   When uncertain, default to 100–300 NIS/member (typical Israeli consumer case).
 
 Total value reality check:

@@ -1181,7 +1181,15 @@ const ASK_CHIPS = [
   {q:'קשור לתיקים שלנו?'}
 ];
 function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-function fmtAnswer(s){return escHtml(s).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/\n/g,'<br>');}
+function fmtAnswer(s){
+  return escHtml(s)
+    .replace(/^#{1,6}\s*(.+)$/gm, '<b>$1</b>')
+    .replace(/^\s*(-{3,}|\*{3,})\s*$/gm, '')
+    .replace(/\*\*(.+?)\*\*/g,'<b>$1</b>')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .replace(/\n/g,'<br>');
+}
 function chatHtml(id) {
   const c = chats[id] || {messages:[]};
   const busy = c.messages.some(m => m.status === 'pending');
@@ -1209,6 +1217,7 @@ function paintChat(id) {
   if (busy && expandedId === id) chatPoll = setTimeout(() => loadChat(id), 2500);
 }
 async function loadChat(id) {
+  const before = (chats[id]?.messages || []).some(m => m.status === 'pending');
   try {
     const r = await fetch('/api/leads/' + id + '/chat');
     if (!r.ok) return;
@@ -1216,6 +1225,13 @@ async function loadChat(id) {
     chats[id] = {messages: d.messages, spent: d.spent, budget: d.budget};
   } catch { return; }
   paintChat(id);
+  const now = (chats[id].messages || []).some(m => m.status === 'pending');
+  if (before && !now) {            // the answer just arrived — bring it into view
+    const answers = document.querySelectorAll('#chat-' + id + ' .ask-a');
+    const last = answers[answers.length - 1];
+    if (last) last.scrollIntoView({block: 'start', behavior: 'smooth'});
+    toast('Scout ענה');
+  }
 }
 async function askScout(id, payload) {
   if (payload.question !== undefined && !String(payload.question).trim()) return;

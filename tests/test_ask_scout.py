@@ -129,9 +129,11 @@ print("\n6. prompt and markup")
 txt = ask_scout.build_system_prompt(lead, ["x {y}"], settings.KNOWN_CASES)
 check("prompt formats with braces in lead text", "x {y}" in txt)
 check("prompt asks for facts with sources and the field-check order", "לא מצאתי" in txt and "FIELD CHECK" in txt)
+check("prompt rules out headings and rules for the small panel", "No markdown headings" in txt)
 html = open(os.path.join(ROOT, "templates", "dashboard.html"), encoding="utf-8").read()
 check("panel on the open lead", 'id="chat-${l.id}"' in html and "בדיקת שטח" in html)
 check("panel loads when a lead opens", "if (expandedId === id) loadChat(id);" in html)
+check("a new answer is scrolled into view", "the answer just arrived" in html and "scrollIntoView" in html)
 
 print("\n7. daily summary")
 d = {"new": 0, "classified": 0, "passed": 0, "scored": 0, "hot": 0, "threshold": 6.5, "pending_retry": 0,

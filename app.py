@@ -81,6 +81,8 @@ def _lead_to_dict(lead, duplicate_count=1, merged_sources=None, suspected_title=
         "suspectedDupOf": lead.suspected_dup_of,
         "suspectedDupScore": lead.suspected_dup_score,
         "dupReview": lead.dup_review or "",
+        "userLabel": lead.user_label or "",
+        "userLabelNote": lead.user_label_note or "",
         "suspectedMatchTitle": suspected_title or "",
     }
 
@@ -239,6 +241,28 @@ def update_status(lid):
     commit_with_retry(db)
     cnt = db.query(func.count(Lead.id)).filter(Lead.dedup_group_id == lead.dedup_group_id).scalar() if lead.dedup_group_id else 1
     return jsonify(_lead_to_dict(lead, cnt))
+
+USER_LABELS = ("yes", "maybe", "no")
+
+@app.route("/api/leads/<int:lid>/label", methods=["PUT"])
+@login_required
+def update_label(lid):
+    """Relevance feedback: is this a lead for the firm? Feeds the eval gold set."""
+    db = get_db()
+    lead = db.query(Lead).get(lid)
+    if not lead: return jsonify({"error": "not found"}), 404
+    data = request.json or {}
+    label = data.get("label")
+    if label not in USER_LABELS and label not in (None, ""):
+        return jsonify({"error": "label must be yes, maybe, no or empty"}), 400
+    if "label" in data:
+        lead.user_label = label or None
+        lead.user_label_at = datetime.now(timezone.utc) if label else None
+    if "note" in data:
+        lead.user_label_note = (str(data["note"] or "").strip()[:500]) or None
+    commit_with_retry(db)
+    return jsonify({"id": lead.id, "userLabel": lead.user_label or "",
+                    "userLabelNote": lead.user_label_note or ""})
 
 @app.route("/api/leads/<int:lid>/resolve-duplicate", methods=["POST"])
 @login_required

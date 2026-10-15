@@ -263,6 +263,12 @@ a{color:inherit;text-decoration:none}
 .tag-pin{background:var(--red-bg);color:var(--red);border:1px solid rgba(224,108,117,0.15)}
 .tag-pacer{background:var(--purple-bg);color:var(--purple);border:1px solid rgba(155,138,251,0.15)}
 .tag-new{background:var(--indigo-glow);color:var(--indigo);border:1px solid rgba(94,106,210,0.2)}
+.tag-lbl-yes{color:var(--green);border:1px solid var(--green)}
+.tag-lbl-maybe{color:var(--amber);border:1px solid var(--amber)}
+.tag-lbl-no{color:var(--text-dim);border:1px solid var(--text-dim)}
+.label-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:12px}
+.label-row .label-q{font-weight:600;color:var(--text)}
+.label-note{flex:1 1 180px;min-width:0;background:transparent;border:1px solid var(--border, rgba(128,128,128,.3));border-radius:6px;padding:5px 8px;color:var(--text);font:inherit;font-size:12px}
 .tag-src{background:var(--blue-bg);color:var(--blue);border:1px solid rgba(97,175,239,0.15)}
 .tag-na-il{background:var(--surface-3);color:var(--text-dim);border:1px solid var(--border)}
 .tag-filed{background:var(--red-bg);color:var(--red);border:1px solid rgba(224,108,117,0.35);font-weight:600}
@@ -1024,6 +1030,7 @@ function buildLeadCard(l) {
   if ((l.notes||'').includes('PACER')) tags += '<span class="tag tag-pacer">PACER</span>';
   if (l.status === 'new') tags += '<span class="tag tag-new">חדש</span>';
   if (l.israelApplicable === false) tags += '<span class="tag tag-na-il">לא ישים בישראל</span>';
+  if (l.userLabel) tags += `<span class="tag tag-lbl-${l.userLabel}">${{yes:'רלוונטי לנו',maybe:'אולי',no:'לא רלוונטי'}[l.userLabel]}</span>`;
 
   let detail = '';
   if (isOpen) {
@@ -1037,7 +1044,21 @@ function buildLeadCard(l) {
       const on = l.status === s.k;
       return `<button class="status-btn${on?' on':''}" style="color:${s.c};border-color:${s.c};${on?'background:'+s.c:''}" onclick="event.stopPropagation();setStatus(${l.id},'${s.k}')">${s.l}</button>`;
     }).join('');
+    const labelDefs = [
+      {k:'yes',l:'כן',c:'var(--green)'},
+      {k:'maybe',l:'אולי',c:'var(--amber)'},
+      {k:'no',l:'לא',c:'var(--text-dim)'}
+    ];
+    const lblBtns = labelDefs.map(s => {
+      const on = l.userLabel === s.k;
+      return `<button class="status-btn${on?' on':''}" style="color:${s.c};border-color:${s.c};${on?'background:'+s.c:''}" onclick="event.stopPropagation();setLabel(${l.id},'${on?'':s.k}')">${s.l}</button>`;
+    }).join('');
+    const noteVal = (l.userLabelNote||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
     detail = `<div class="lead-detail">
+      <div class="label-row" onclick="event.stopPropagation()">
+        <span class="label-q">ליד בשבילנו?</span>${lblBtns}
+        <input class="label-note" id="lblnote-${l.id}" placeholder="למה? (לא חובה)" value="${noteVal}" onchange="setLabelNote(${l.id}, this.value)">
+      </div>
       <div class="detail-grid">
         <div class="dg-item"><span class="dg-label">עילה</span><span class="dg-value">${l.israeliLawBasis||'—'}</span></div>
         <div class="dg-item"><span class="dg-label">גודל קבוצה</span><span class="dg-value">${l.estimatedClassSize||'—'}</span></div>
@@ -1132,6 +1153,30 @@ async function resolveDup(id, action) {
   expandedId = null;
   await loadStats();
   await loadLeads();
+}
+
+async function setLabel(id, label) {
+  let ok = false;
+  try {
+    const r = await fetch('/api/leads/'+id+'/label', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({label})});
+    ok = r.ok;
+  } catch {}
+  if (!ok) { toast('השמירה נכשלה — נסה שוב'); return; }
+  const lead = leads.find(l=>l.id===id);
+  if (lead) lead.userLabel = label;
+  renderLeads();
+  toast(label ? 'נשמר — תודה, זה נכנס למדידת הבוט' : 'התיוג הוסר');
+}
+
+async function setLabelNote(id, note) {
+  let ok = false;
+  try {
+    const r = await fetch('/api/leads/'+id+'/label', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({note})});
+    ok = r.ok;
+  } catch {}
+  const lead = leads.find(l=>l.id===id);
+  if (ok && lead) lead.userLabelNote = note;
+  toast(ok ? 'ההערה נשמרה' : 'שמירת ההערה נכשלה');
 }
 
 async function setStatus(id, s) {

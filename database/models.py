@@ -112,6 +112,13 @@ class Lead(Base):
     # NULL" rather than a time window over scraped_at.
     alerted_at = Column(DateTime)
 
+    # Relevance feedback from the firm — "is this a lead for us?" (yes / maybe /
+    # no). Separate from status, which tracks workflow. Every labelled lead joins
+    # the gold set that scripts/run_eval.py measures the prompts against.
+    user_label = Column(String(10))
+    user_label_note = Column(Text)
+    user_label_at = Column(DateTime)
+
     # Relationships
     raw_sources = relationship("RawSource", back_populates="lead")
 
@@ -196,6 +203,9 @@ def _run_migrations(engine) -> None:
         ("israeli_class_size_estimate", "TEXT"),
         ("stage1_error",         "TEXT"),
         ("stage1_attempts",      "INTEGER"),
+        ("user_label",           "TEXT"),
+        ("user_label_note",      "TEXT"),
+        ("user_label_at",        "DATETIME"),
     ]
     with engine.connect() as conn:
         for col, dtype in new_cols:

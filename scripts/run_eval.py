@@ -30,6 +30,7 @@ Usage (Render Shell):
   python scripts/run_eval.py
   python scripts/run_eval.py --live --out /var/data/eval_run.json
   python scripts/run_eval.py --live --full --limit 10
+  python scripts/run_eval.py --with-db-labels      # gold file + dashboard labels
 """
 import os
 import sys
@@ -52,6 +53,21 @@ def load_gold(path):
         if it.get("label") not in ("yes", "maybe", "no"):
             raise ValueError(f"bad label in gold item {it.get('id') or it.get('ext')}: {it.get('label')!r}")
     return items
+
+
+def db_labelled_items(db_path, exclude_ids=()):
+    """Leads labelled from the dashboard (user_label) that are not already in the gold file."""
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        rows = con.execute("SELECT id, user_label, user_label_note FROM leads "
+                           "WHERE user_label IN ('yes','maybe','no') ORDER BY id").fetchall()
+    except sqlite3.OperationalError:
+        rows = []          # database from before the user_label column existed
+    con.close()
+    ex = set(exclude_ids)
+    return [{"id": r["id"], "label": r["user_label"], "note": r["user_label_note"] or "", "from": "dashboard"}
+            for r in rows if r["id"] not in ex]
 
 
 def attach_db_rows(items, db_path):
@@ -181,12 +197,19 @@ def main():
     ap.add_argument("--live", action="store_true", help="re-run Stage 1 with the current prompt")
     ap.add_argument("--full", action="store_true", help="with --live: also Stage 2 + 3")
     ap.add_argument("--limit", type=int, default=0, help="only the first N items (cost guard)")
+    ap.add_argument("--with-db-labels", action="store_true",
+                    help="also include leads labelled from the dashboard (the gold file wins on overlap)")
     ap.add_argument("--out", help="write per-item results as JSON")
     a = ap.parse_args()
     if a.full and not a.live:
         ap.error("--full needs --live")
 
-    items = attach_db_rows(load_gold(a.gold), a.db)
+    gold = load_gold(a.gold)
+    if a.with_db_labels:
+        extra = db_labelled_items(a.db, exclude_ids=[g["id"] for g in gold if "id" in g])
+        print(f"  + {len(extra)} lead(s) labelled from the dashboard", file=sys.stderr)
+        gold += extra
+    items = attach_db_rows(gold, a.db)
     if a.limit:
         items = items[: a.limit]
     gate, hot = float(MIN_RELEVANCE_SCORE), float(HIGH_PRIORITY_THRESHOLD)

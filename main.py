@@ -39,6 +39,7 @@ from config.settings import (
     ANTHROPIC_API_KEY, CLAUDE_MODEL, DATABASE_URL, DATABASE_PATH,
     MIN_RELEVANCE_SCORE, HIGH_PRIORITY_THRESHOLD,
     PREVIOUS_HIGH_PRIORITY_THRESHOLD, HIGH_PRIORITY_THRESHOLD_SINCE, NEAR_HOT_FLOOR,
+    SECOND_LOOK_MIN, SECOND_LOOK_ENABLED,
     SCRAPE_DELAY_SECONDS, SOURCES, FIRM_EXPERTISE, KNOWN_CASES,
     VOYAGE_API_KEY, DEDUP_THRESHOLD, AUTO_MERGE_THRESHOLD, REVIEW_THRESHOLD,
 )
@@ -209,7 +210,7 @@ class ClassActionScout:
 
             for item, raw in all_items:
                 source_type = SOURCES.get(item.source_name, {}).get("type", "unknown")
-                classification = self._classify_safely(item.title, item.content, source_type)
+                classification = self._classify_safely(item.title, item.content, source_type, url=item.url)
                 lead = Lead(
                     title=item.title,
                     source_name=item.source_name,
@@ -234,7 +235,8 @@ class ClassActionScout:
                     url=lead.source_url, source_name=lead.source_name,
                 )
                 classification = self._classify_safely(
-                    lead.title, lead.raw_content or "", lead.source_type or "unknown"
+                    lead.title, lead.raw_content or "", lead.source_type or "unknown",
+                    url=lead.source_url,
                 )
                 decision = self._apply_stage1(lead, classification)
                 run_leads.append(lead)
@@ -904,16 +906,45 @@ a {{ color: #2c5282; }}
             .all()
         )
 
-    def _classify_safely(self, title: str, content: str, source_type: str) -> dict:
+    def _classify_safely(self, title: str, content: str, source_type: str, url: str = None) -> dict:
         """
         One item's classification failing must not take the run down with it.
         Any ordinary exception becomes a Stage-1 error (NULL, retried).
+        A just-under-the-gate verdict gets a second look at the full text.
         """
         try:
-            return self.analyzer.classify(title=title, content=content, source_type=source_type)
+            first = self.analyzer.classify(title=title, content=content, source_type=source_type)
         except Exception as e:
             logger.error(f"  Stage 1 raised for '{title[:50]}': {e}")
             return {"relevance_score": None, "stage1_error": f"exception: {e}"[:500]}
+        return self._second_look(title, content, source_type, url, first)
+
+    def _second_look(self, title, content, source_type, url, first: dict) -> dict:
+        """
+        Re-read an item scored in [SECOND_LOOK_MIN, gate) in full. Only a second
+        verdict at or over the gate replaces the first; anything else (no full
+        text, nothing new, an error) keeps the first verdict as it was.
+        """
+        score = first.get("relevance_score")
+        if (not SECOND_LOOK_ENABLED or score is None or not url
+                or not (SECOND_LOOK_MIN <= score < MIN_RELEVANCE_SCORE)
+                or not hasattr(self.analyzer, "second_look")):
+            return first
+        try:
+            full = self._fetch_article_text(url)
+            if len(full) < len(content or "") + 500:      # nothing more to read
+                return first
+            second = self.analyzer.second_look(title, full, source_type, first)
+            new = second.get("relevance_score")
+            if second.get("stage1_error") or new is None or new < MIN_RELEVANCE_SCORE:
+                logger.info(f"  [second look] '{title[:50]}' stays at {score} (second: {new})")
+                return first
+            logger.info(f"  [second look] '{title[:50]}' {score} → {new} — passes on the full text")
+            second["reasoning"] = f"מבט שני (טקסט מלא, עלה מ-{score:g}): " + (second.get("reasoning") or "")
+            return second
+        except Exception as e:
+            logger.warning(f"  [second look] '{title[:50]}' skipped: {e}")
+            return first
 
     @staticmethod
     def _apply_stage1(lead: Lead, c: dict) -> str:

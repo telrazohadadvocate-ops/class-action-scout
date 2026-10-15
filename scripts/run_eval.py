@@ -89,6 +89,7 @@ def attach_db_rows(items, db_path):
                 continue
             out.append({**it, "key": f"#{it['id']}", "title": r["title"],
                         "content": r["raw_content"] or "", "source_type": r["source_type"] or "unknown",
+                        "url": r["source_url"],
                         "stored": {"rel": r["relevance_score"], "pri": r["priority_score"],
                                    "str": r["strength_score"], "why": r["relevance_reasoning"] or ""}})
         else:
@@ -106,7 +107,7 @@ def score_live(it, scout, full):
     """Re-run the real pipeline code on a transient Lead (never added to a session)."""
     from database.models import Lead
     lead = Lead(title=it["title"], raw_content=it["content"], source_type=it["source_type"])
-    c = scout.analyzer.classify(it["title"], it["content"], it["source_type"])
+    c = scout._classify_safely(it["title"], it["content"], it["source_type"], url=it.get("url"))
     decision = scout._apply_stage1(lead, c)
     res = {"rel": lead.relevance_score, "pri": None, "str": None,
            "why": lead.relevance_reasoning or lead.stage1_error or ""}

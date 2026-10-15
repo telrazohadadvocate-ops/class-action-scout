@@ -191,6 +191,29 @@ class ClaudeAnalyzer:
             logger.error(f"Stage 1 failed — stored as NULL with error, retryable: {e}")
             return {"relevance_score": None, "stage1_error": str(e)[:500]}
 
+    def second_look(self, title: str, full_text: str, source_type: str, first: dict) -> dict:
+        """
+        Stage 1, second look: the same verdict shape as classify(), from the full
+        text, for an item the first screen put just under the gate. All the
+        judgement lives in prompts/second_look.txt.
+        """
+        prompt = _load_prompt("second_look")
+        user_msg = prompt.format(
+            title=title,
+            content=full_text[:6000],
+            source_type=source_type,
+            first_score=first.get("relevance_score"),
+            first_reasoning=(first.get("reasoning") or "")[:800],
+        )
+        label = f"second look '{title[:50]}'"
+        try:
+            result = self._request_json(user_msg, MAX_TOKENS_CLASSIFY, _CLASSIFY_SCHEMA,
+                                        label=label, required=("relevance_score", "reasoning"))
+            return self._validate_classification(result, label=label)
+        except AnalysisError as e:
+            logger.warning(f"{label} failed — first verdict kept: {e}")
+            return {"relevance_score": None, "stage1_error": str(e)[:500]}
+
     @staticmethod
     def _validate_classification(result: dict, label: str = "classify") -> dict:
         """

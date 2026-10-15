@@ -83,6 +83,11 @@ HIGH_PRIORITY_THRESHOLD_SINCE = "2026-10-15"
 # Daily summary also lists leads in [NEAR_HOT_FLOOR, HIGH_PRIORITY_THRESHOLD) —
 # shown, never alerted.
 NEAR_HOT_FLOOR = 6.0
+# Stage-1 second look: an item scored in [SECOND_LOOK_MIN, MIN_RELEVANCE_SCORE)
+# on headline + summary is re-read in full (prompts/second_look.txt) before it
+# is dropped. SECOND_LOOK_ENABLED=false turns it off.
+SECOND_LOOK_MIN = 2.0
+SECOND_LOOK_ENABLED = os.getenv("SECOND_LOOK_ENABLED", "true").lower() != "false"
 SCRAPE_DELAY_SECONDS = 3.0     # polite delay between HTTP requests
 
 # ── Scheduling ─────────────────────────────────────────

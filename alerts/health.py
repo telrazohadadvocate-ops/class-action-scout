@@ -186,7 +186,9 @@ def build_digest_email(d: dict, issues, now_utc):
             f'<li style="margin-bottom:8px;"><b>עדיפות {_esc(t["score"])}</b>'
             + (f' · חוזק {_esc(t["strength"])}' if t.get("strength") is not None else '')
             + ' · '
-            f'<bdi>{_esc(t["company"])}</bdi> — <bdi>{_esc(t["title"])}</bdi>'
+            f'<bdi>{_esc(t["company"])}</bdi> — '
+            + (f'<a href="{DASHBOARD_URL}/?lead={int(t["id"])}" style="color:#1A1D2E;"><bdi>{_esc(t["title"])}</bdi></a>'
+               if t.get("id") else f'<bdi>{_esc(t["title"])}</bdi>')
             + (' <span style="color:#7B8099;">(לא ישים בישראל)</span>' if t["israel"] is False else '')
             + '</li>'
             for t in d["top"])

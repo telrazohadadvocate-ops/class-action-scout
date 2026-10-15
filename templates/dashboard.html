@@ -850,6 +850,7 @@ let currentView = 'leads';
 // ═══════════════════════════════════════════════
 async function init() {
   await Promise.all([loadStats(), loadLeads()]);
+  await openLeadFromUrl();
   buildKanban();
   renderAnalytics();
   renderSources();
@@ -1110,7 +1111,7 @@ function buildLeadCard(l) {
     </div>`;
   }
 
-  return `<div class="lead-card p-${l.priority||'low'}${isOpen?' open':''}" onclick="toggleLead(${l.id})">
+  return `<div class="lead-card p-${l.priority||'low'}${isOpen?' open':''}" id="lead-${l.id}" onclick="toggleLead(${l.id})">
     <div class="lead-row">
       <span class="priority-dot ${l.priority||'low'}"></span>
       <div class="lead-body">
@@ -1127,6 +1128,27 @@ function buildLeadCard(l) {
         ${l.priorityScore != null ? `<div class="score-pill ps"><div class="score-num">${l.priorityScore}</div><div class="score-lbl">עדיפות</div></div>` : ''}
       </div>
     </div>${detail}</div>`;
+}
+
+// A link from an alert email: /?lead=ID opens that lead, even when the current
+// filters (time range, hidden duplicates, paging) would not have listed it.
+async function openLeadFromUrl() {
+  let id = null;
+  try { id = parseInt(new URLSearchParams(location.search).get('lead'), 10); } catch {}
+  if (!id) return;
+  if (!leads.some(l => l.id === id)) {
+    try {
+      const r = await fetch('/api/leads/' + id);
+      if (!r.ok) { toast('ליד #' + id + ' לא נמצא'); return; }
+      leads = [await r.json(), ...leads];
+    } catch { return; }
+  }
+  navTo('leads');
+  expandedId = id;
+  renderLeads();
+  const el = document.getElementById('lead-' + id);
+  if (el) el.scrollIntoView({block: 'start'});
+  try { history.replaceState(null, '', location.pathname + location.hash); } catch {}
 }
 
 function toggleLead(id) {

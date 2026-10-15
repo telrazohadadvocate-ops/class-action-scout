@@ -30,7 +30,7 @@ def _build_lead_row(lead: dict) -> str:
     action = lead.get("recommended_action", "") or ""
     strength = lead.get("strength_score") or ""
     lead_id = lead.get("id", "")
-    link = f"{DASHBOARD_URL}/" if not lead_id else f"{DASHBOARD_URL}/"
+    link = f"{DASHBOARD_URL}/?lead={int(lead_id)}" if lead_id else f"{DASHBOARD_URL}/"
 
     strength_txt = f"חוזק: {strength}/10" if strength else ""
     action_snippet = (action[:160] + "…") if len(action) > 160 else action

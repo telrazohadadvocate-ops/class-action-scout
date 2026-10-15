@@ -36,7 +36,7 @@ def login_required(f):
         if not session.get("authenticated"):
             if request.path.startswith("/api/"):
                 return jsonify({"error": "unauthorized"}), 401
-            return redirect(url_for("login"))
+            return redirect(url_for("login", next=request.full_path))
         return f(*args, **kwargs)
     return decorated
 
@@ -98,17 +98,26 @@ def _parse_score_reasoning(raw):
 
 # ── Auth routes ────────────────────────────────────────
 
+def _safe_next(target):
+    """Only a path on this site (e.g. "/?lead=12") — never another host."""
+    t = (target or "").strip()
+    if not t.startswith("/") or t.startswith("//") or "\\" in t:
+        return None
+    return t
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
+    nxt = _safe_next(request.values.get("next"))
     if request.method == "POST":
         pwd = request.form.get("password", "")
         if DASHBOARD_PASSWORD and pwd == DASHBOARD_PASSWORD:
             session.permanent = True
             session["authenticated"] = True
-            return redirect(url_for("dashboard"))
+            return redirect(nxt or url_for("dashboard"))
         error = "סיסמה שגויה"
-    return render_template("login.html", error=error)
+    return render_template("login.html", error=error, next=nxt or "")
 
 @app.route("/logout")
 def logout():

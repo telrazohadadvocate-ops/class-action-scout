@@ -161,6 +161,7 @@ button[type="submit"]:active{
   {% endif %}
 
   <form method="post" action="/login">
+    <input type="hidden" name="next" value="{{ next }}">
     <div class="field">
       <label for="password">סיסמה</label>
       <input type="password" id="password" name="password" placeholder="••••••••" autofocus autocomplete="current-password">

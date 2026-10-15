@@ -39,7 +39,7 @@ from config.settings import (
     ANTHROPIC_API_KEY, CLAUDE_MODEL, DATABASE_URL, DATABASE_PATH,
     MIN_RELEVANCE_SCORE, HIGH_PRIORITY_THRESHOLD,
     PREVIOUS_HIGH_PRIORITY_THRESHOLD, HIGH_PRIORITY_THRESHOLD_SINCE, NEAR_HOT_FLOOR,
-    SECOND_LOOK_MIN, SECOND_LOOK_ENABLED,
+    SECOND_LOOK_MIN, SECOND_LOOK_ENABLED, ASK_MONTHLY_BUDGET_USD,
     SCRAPE_DELAY_SECONDS, SOURCES, FIRM_EXPERTISE, KNOWN_CASES,
     VOYAGE_API_KEY, DEDUP_THRESHOLD, AUTO_MERGE_THRESHOLD, REVIEW_THRESHOLD,
 )
@@ -839,7 +839,19 @@ a {{ color: #2c5282; }}
             "top": [card(l) for l in top],
             "near": [card(l) for l in near],
             "near_floor": float(NEAR_HOT_FLOOR),
+            "ask_spent": self._ask_spent_this_month(now_utc),
+            "ask_budget": float(ASK_MONTHLY_BUDGET_USD),
         }
+
+    def _ask_spent_this_month(self, now_utc) -> float:
+        try:
+            from sqlalchemy import func
+            from database.models import LeadChat
+            start = datetime(now_utc.year, now_utc.month, 1)
+            return round(float(self.db.query(func.coalesce(func.sum(LeadChat.cost_usd), 0.0))
+                               .filter(LeadChat.created_at >= start).scalar() or 0.0), 2)
+        except Exception:
+            return 0.0
 
     def _send_health_and_digest(self, stats: dict) -> None:
         """

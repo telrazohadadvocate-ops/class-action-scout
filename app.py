@@ -17,7 +17,7 @@ from config.settings import (
     DATABASE_URL, DATABASE_PATH, DASHBOARD_PASSWORD, FLASK_SECRET_KEY,
     VOYAGE_API_KEY, MIN_RELEVANCE_SCORE,
 )
-from database.models import init_database, get_session, commit_with_retry, Lead, ScrapeLog
+from database.models import init_database, get_session, commit_with_retry, Lead, ScrapeLog, LeadChat
 from analysis.value_estimator import nis_bucket
 
 app = Flask(__name__)
@@ -250,6 +250,109 @@ def update_status(lid):
     commit_with_retry(db)
     cnt = db.query(func.count(Lead.id)).filter(Lead.dedup_group_id == lead.dedup_group_id).scalar() if lead.dedup_group_id else 1
     return jsonify(_lead_to_dict(lead, cnt))
+
+# ── Ask Scout ──────────────────────────────────────────
+
+ASK_STALE_MINUTES = 6      # a pending answer older than this was cut off (deploy / restart)
+
+
+def _month_start_utc():
+    n = datetime.now(timezone.utc)
+    return datetime(n.year, n.month, 1)
+
+
+def _ask_spent_this_month(db) -> float:
+    return float(db.query(func.coalesce(func.sum(LeadChat.cost_usd), 0.0))
+                 .filter(LeadChat.created_at >= _month_start_utc()).scalar() or 0.0)
+
+
+def _chat_dict(m):
+    try:
+        src = json.loads(m.sources or "[]")
+    except Exception:
+        src = []
+    return {"id": m.id, "role": m.role, "content": m.content or "", "sources": src,
+            "status": m.status or "done",
+            "createdAt": m.created_at.isoformat() if m.created_at else ""}
+
+
+def _run_in_background(fn, *args):
+    """Separate so tests can run the job inline."""
+    threading.Thread(target=fn, args=args, daemon=True).start()
+
+
+def _answer_job(lead_id, pending_id, user_id, question):
+    from config.settings import ANTHROPIC_API_KEY, CLAUDE_MODEL, KNOWN_CASES
+    from analysis import ask_scout
+    db = get_db()
+    row = db.query(LeadChat).get(pending_id)
+    try:
+        lead = db.query(Lead).get(lead_id)
+        related = [t for (t,) in db.query(Lead.title).filter(
+            Lead.dedup_group_id == lead.dedup_group_id, Lead.id != lead.id).limit(10).all()] \
+            if lead.dedup_group_id else []
+        history = [{"role": m.role, "content": m.content} for m in db.query(LeadChat)
+                   .filter(LeadChat.lead_id == lead_id, LeadChat.status == "done", LeadChat.id < user_id)
+                   .order_by(LeadChat.id.desc()).limit(8).all()][::-1]
+        while history and history[0]["role"] != "user":
+            history.pop(0)
+        system = ask_scout.build_system_prompt(lead, related, KNOWN_CASES)
+        client = _anthropic_client(ANTHROPIC_API_KEY)
+        out = ask_scout.answer(client, CLAUDE_MODEL, system, history, question)
+        row.content, row.sources, row.cost_usd, row.status = (
+            out["text"], ask_scout.dumps_sources(out["sources"]), out["cost_usd"], "done")
+    except Exception as e:
+        app.logger.error(f"Ask Scout failed for lead {lead_id}: {e}")
+        msg = str(e)
+        hint = "נגמר הקרדיט ב-API" if "credit balance" in msg else "תקלה זמנית"
+        row.content, row.status = f"לא הצלחתי לענות ({hint}). נסה שוב בעוד רגע.", "error"
+    commit_with_retry(db)
+
+
+def _anthropic_client(key):
+    import anthropic
+    return anthropic.Anthropic(api_key=key)
+
+
+@app.route("/api/leads/<int:lid>/chat")
+@login_required
+def get_chat(lid):
+    db = get_db()
+    stale = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=ASK_STALE_MINUTES)
+    for m in db.query(LeadChat).filter(LeadChat.lead_id == lid, LeadChat.status == "pending",
+                                       LeadChat.created_at < stale).all():
+        m.status, m.content = "error", "התשובה נקטעה (השרת התחלף באמצע). נסה שוב."
+    commit_with_retry(db)
+    rows = db.query(LeadChat).filter(LeadChat.lead_id == lid).order_by(LeadChat.id).all()
+    from config.settings import ASK_MONTHLY_BUDGET_USD
+    return jsonify({"messages": [_chat_dict(m) for m in rows],
+                    "spent": round(_ask_spent_this_month(db), 2), "budget": ASK_MONTHLY_BUDGET_USD})
+
+
+@app.route("/api/leads/<int:lid>/ask", methods=["POST"])
+@login_required
+def ask_lead(lid):
+    from config.settings import ASK_MONTHLY_BUDGET_USD
+    from analysis.ask_scout import FIELD_CHECK_QUESTION
+    db = get_db()
+    if not db.query(Lead).get(lid):
+        return jsonify({"error": "not found"}), 404
+    data = request.json or {}
+    q = FIELD_CHECK_QUESTION if data.get("preset") == "field_check" else str(data.get("question") or "").strip()[:1000]
+    if not q:
+        return jsonify({"error": "empty question"}), 400
+    if db.query(LeadChat).filter(LeadChat.lead_id == lid, LeadChat.status == "pending").count():
+        return jsonify({"error": "busy", "message": "Scout עדיין עונה על השאלה הקודמת"}), 409
+    spent = _ask_spent_this_month(db)
+    if spent >= ASK_MONTHLY_BUDGET_USD:
+        return jsonify({"error": "budget", "message":
+                        f"הגעת לתקרה החודשית של ${ASK_MONTHLY_BUDGET_USD:g} לשאלות. היא מתאפסת בתחילת החודש."}), 429
+    u = LeadChat(lead_id=lid, role="user", content=q, status="done")
+    a = LeadChat(lead_id=lid, role="assistant", content="", status="pending")
+    db.add(u); db.flush(); db.add(a); commit_with_retry(db)
+    _run_in_background(_answer_job, lid, a.id, u.id, q)
+    return jsonify({"messages": [_chat_dict(u), _chat_dict(a)]})
+
 
 USER_LABELS = ("yes", "maybe", "no")
 

@@ -163,6 +163,21 @@ class PinkasCache(Base):
     searched_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class LeadChat(Base):
+    """One turn of 'Ask Scout' on a lead. An assistant turn is written as
+    'pending' and filled in by a background thread ('done' or 'error')."""
+    __tablename__ = "lead_chats"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    lead_id = Column(Integer, ForeignKey("leads.id"), index=True)
+    role = Column(String(10))               # user / assistant
+    content = Column(Text)
+    sources = Column(Text)                  # JSON [{url, title}]
+    status = Column(String(10), default="done")   # pending / done / error
+    cost_usd = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class AlertLog(Base):
     """Record of high-priority alert emails sent"""
     __tablename__ = "alert_log"

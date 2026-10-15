@@ -194,6 +194,8 @@ def build_digest_email(d: dict, issues, now_utc):
         (f"ציון {d['threshold']:g} ומעלה", d["hot"]),
         ("ממתינים לסיווג חוזר (שגיאה טכנית)", d["pending_retry"]),
     ]
+    if d.get("ask_spent"):
+        rows.append((f"שאל את Scout החודש (תקרה ${d.get('ask_budget', 20):g})", f"${d['ask_spent']:.2f}"))
     top = ""
     if d["top"]:
         top = ('<h3 style="margin:20px 0 6px;font-size:15px;color:#1A1D2E;">המובילים ב-24 השעות האחרונות</h3>'

@@ -266,6 +266,22 @@ a{color:inherit;text-decoration:none}
 .tag-lbl-yes{color:var(--green);border:1px solid var(--green)}
 .tag-lbl-maybe{color:var(--amber);border:1px solid var(--amber)}
 .tag-lbl-no{color:var(--text-dim);border:1px solid var(--text-dim)}
+.ask-panel{border:1px solid rgba(94,106,210,0.25);border-radius:10px;padding:12px;margin-bottom:12px;background:linear-gradient(135deg,rgba(94,106,210,0.05),transparent)}
+.ask-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;font-weight:600;color:var(--indigo)}
+.ask-spend{font-weight:400;font-size:11px;color:var(--text-dim)}
+.ask-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.ask-chip{font:inherit;font-size:12px;border:1px solid var(--indigo);color:var(--indigo);background:transparent;border-radius:999px;padding:4px 10px;cursor:pointer}
+.ask-chip.main{background:var(--indigo);color:#fff}
+.ask-chip:disabled{opacity:.5;cursor:default}
+.ask-msgs{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.ask-q{align-self:flex-start;background:var(--indigo-glow);border-radius:10px;padding:6px 10px;font-size:12.5px;color:var(--text);max-width:90%}
+.ask-a{border:1px solid rgba(128,128,128,0.2);border-radius:10px;padding:8px 10px;font-size:12.5px;line-height:1.65;color:var(--text);white-space:normal}
+.ask-a.err{color:var(--red)}
+.ask-a.wait{color:var(--text-dim);font-style:italic}
+.ask-src{margin-top:6px;font-size:11px;color:var(--text-dim)}
+.ask-src a{color:var(--indigo);text-decoration:none;margin-inline-end:8px}
+.ask-row{display:flex;gap:6px}
+.ask-row input{flex:1;min-width:0;background:transparent;border:1px solid rgba(128,128,128,0.3);border-radius:8px;padding:6px 9px;color:var(--text);font:inherit;font-size:12.5px}
 .label-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:12px}
 .label-row .label-q{font-weight:600;color:var(--text)}
 .label-note{flex:1 1 180px;min-width:0;background:transparent;border:1px solid var(--border, rgba(128,128,128,.3));border-radius:6px;padding:5px 8px;color:var(--text);font:inherit;font-size:12px}
@@ -1060,6 +1076,7 @@ function buildLeadCard(l) {
         <span class="label-q">ליד בשבילנו?</span>${lblBtns}
         <input class="label-note" id="lblnote-${l.id}" placeholder="למה? (לא חובה)" value="${noteVal}" onchange="setLabelNote(${l.id}, this.value)">
       </div>
+      <div class="ask-panel" id="chat-${l.id}" onclick="event.stopPropagation()">${chatHtml(l.id)}</div>
       <div class="detail-grid">
         <div class="dg-item"><span class="dg-label">עילה</span><span class="dg-value">${l.israeliLawBasis||'—'}</span></div>
         <div class="dg-item"><span class="dg-label">גודל קבוצה</span><span class="dg-value">${l.estimatedClassSize||'—'}</span></div>
@@ -1146,14 +1163,77 @@ async function openLeadFromUrl() {
   navTo('leads');
   expandedId = id;
   renderLeads();
+  loadChat(id);
   const el = document.getElementById('lead-' + id);
   if (el) el.scrollIntoView({block: 'start'});
   try { history.replaceState(null, '', location.pathname + location.hash); } catch {}
 }
 
+// ═══════════════════════════════════════════════
+// ASK SCOUT — questions about the open lead, answered with web search
+// ═══════════════════════════════════════════════
+const chats = {};          // lead id → {messages, spent, budget, err}
+let chatPoll = null;
+const ASK_CHIPS = [
+  {q:'נמכר בישראל? מי היבואן?'},
+  {q:'יש פסיקה או ייצוגית דומה בישראל?'},
+  {q:'מה העילה החזקה ומה נקודת החולשה?'},
+  {q:'קשור לתיקים שלנו?'}
+];
+function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function fmtAnswer(s){return escHtml(s).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/\n/g,'<br>');}
+function chatHtml(id) {
+  const c = chats[id] || {messages:[]};
+  const busy = c.messages.some(m => m.status === 'pending');
+  const spend = c.budget ? `<span class="ask-spend">החודש: $${(c.spent||0).toFixed(2)} מתוך $${c.budget}</span>` : '';
+  const chips = `<button class="ask-chip main" ${busy?'disabled':''} onclick="askScout(${id},{preset:'field_check'})">בדיקת שטח</button>`
+    + ASK_CHIPS.map((x,i) => `<button class="ask-chip" ${busy?'disabled':''} onclick="askScout(${id},{question:ASK_CHIPS[${i}].q})">${escHtml(x.q)}</button>`).join('');
+  const msgs = c.messages.map(m => {
+    if (m.role === 'user') return `<div class="ask-q">${escHtml(m.content.length > 160 ? m.content.slice(0,157)+'…' : m.content)}</div>`;
+    if (m.status === 'pending') return `<div class="ask-a wait">Scout בודק… (חיפוש ברשת לוקח עד דקה)</div>`;
+    const src = (m.sources||[]).length ? `<div class="ask-src">מקורות: ${m.sources.map((s,i)=>`<a href="${escHtml(s.url)}" target="_blank" rel="noopener">[${i+1}] ${escHtml((s.title||s.url).slice(0,60))}</a>`).join('')}</div>` : '';
+    return `<div class="ask-a${m.status==='error'?' err':''}">${fmtAnswer(m.content)}${src}</div>`;
+  }).join('');
+  return `<div class="ask-head"><span>שאל את Scout</span>${spend}</div>
+    <div class="ask-chips">${chips}</div>
+    ${msgs?`<div class="ask-msgs">${msgs}</div>`:''}
+    ${c.err?`<div class="ask-a err" style="margin-bottom:8px">${escHtml(c.err)}</div>`:''}
+    <div class="ask-row"><input id="askq-${id}" placeholder="שאלה חופשית על הליד…" onkeydown="if(event.key==='Enter'){askScout(${id},{question:this.value})}" ${busy?'disabled':''}>
+    <button class="ask-chip main" ${busy?'disabled':''} onclick="askScout(${id},{question:document.getElementById('askq-${id}').value})">שאל</button></div>`;
+}
+function paintChat(id) {
+  const el = document.getElementById('chat-' + id);
+  if (el) el.innerHTML = chatHtml(id);
+  const busy = (chats[id]?.messages || []).some(m => m.status === 'pending');
+  clearTimeout(chatPoll);
+  if (busy && expandedId === id) chatPoll = setTimeout(() => loadChat(id), 2500);
+}
+async function loadChat(id) {
+  try {
+    const r = await fetch('/api/leads/' + id + '/chat');
+    if (!r.ok) return;
+    const d = await r.json();
+    chats[id] = {messages: d.messages, spent: d.spent, budget: d.budget};
+  } catch { return; }
+  paintChat(id);
+}
+async function askScout(id, payload) {
+  if (payload.question !== undefined && !String(payload.question).trim()) return;
+  const c = chats[id] || (chats[id] = {messages: []});
+  c.err = '';
+  try {
+    const r = await fetch('/api/leads/' + id + '/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { c.err = d.message || 'השאלה לא נשלחה — נסה שוב'; paintChat(id); return; }
+    c.messages = c.messages.concat(d.messages);
+  } catch { c.err = 'אין חיבור לשרת — נסה שוב'; }
+  paintChat(id);
+}
+
 function toggleLead(id) {
   expandedId = expandedId === id ? null : id;
   renderLeads();
+  if (expandedId === id) loadChat(id);
 }
 
 function updateReviewChip() {

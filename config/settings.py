@@ -87,6 +87,9 @@ NEAR_HOT_FLOOR = 6.0
 # on headline + summary is re-read in full (prompts/second_look.txt) before it
 # is dropped. SECOND_LOOK_ENABLED=false turns it off.
 SECOND_LOOK_MIN = 2.0
+# "Ask Scout" (questions + field checks on a lead, with web search): monthly cap
+# in USD. Over it, new questions are refused with a message; scans are unaffected.
+ASK_MONTHLY_BUDGET_USD = float(os.getenv("ASK_MONTHLY_BUDGET_USD", "20"))
 SECOND_LOOK_ENABLED = os.getenv("SECOND_LOOK_ENABLED", "true").lower() != "false"
 SCRAPE_DELAY_SECONDS = 3.0     # polite delay between HTTP requests
 

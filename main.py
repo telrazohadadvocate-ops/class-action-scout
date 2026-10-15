@@ -1274,6 +1274,24 @@ a {{ color: #2c5282; }}
         return False
 
     @staticmethod
+    def _unwrap_redirect(url: str) -> str:
+        """
+        Google Alerts links are google.com/url?...&url=<article>. Fetching the
+        wrapper returns Google's redirect page, not the article, so every Hebrew
+        Google-Alerts lead was read from its snippet only. Return the article URL.
+        """
+        try:
+            from urllib.parse import urlparse, parse_qs
+            u = urlparse(url)
+            if u.netloc.endswith("google.com") and u.path == "/url":
+                target = (parse_qs(u.query).get("url") or parse_qs(u.query).get("q") or [""])[0]
+                if target.startswith("http"):
+                    return target
+        except Exception:
+            pass
+        return url
+
+    @staticmethod
     def _fetch_article_text(url: str) -> str:
         """
         Fetch the full article body from url using requests + BeautifulSoup.
@@ -1285,6 +1303,7 @@ a {{ color: #2c5282; }}
         """
         if not url:
             return ""
+        url = ClassActionScout._unwrap_redirect(url)
         try:
             import requests
             from bs4 import BeautifulSoup

@@ -108,5 +108,11 @@ s._fetch_article_text = lambda u: LONG
 res = RE.score_live({"title": "t", "content": "c", "source_type": "international", "url": "http://x"}, s, full=False)
 check("eval sees the second-look score", res["rel"] == 7.0)
 
+print("\n5. Google Alerts redirect links")
+g = "https://www.google.com/url?rct=j&sa=t&url=https://www.calcalist.co.il/local_news/article/bkub4t0dme&ct=ga&cd=CAIy&usg=AOv"
+check("google.com/url unwrapped to the article", M.ClassActionScout._unwrap_redirect(g) == "https://www.calcalist.co.il/local_news/article/bkub4t0dme")
+check("ordinary URL untouched", M.ClassActionScout._unwrap_redirect("https://www.law360.com/a/1") == "https://www.law360.com/a/1")
+check("google URL without a target untouched", M.ClassActionScout._unwrap_redirect("https://www.google.com/url?rct=j") == "https://www.google.com/url?rct=j")
+
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILURE(S)"))
 sys.exit(1 if FAILURES else 0)

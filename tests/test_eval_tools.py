@@ -150,5 +150,12 @@ check("below-gate item not sent to stage 2", r0["rel"] == 2.0 and r0["pri"] is N
 check("technical error reported, not a score", out["x-boom"]["rel"] is None and out["x-boom"].get("error") == "api down")
 check("live run did not touch the database", digest() == before)
 
+# ── 4. the committed gold set is well-formed ──────────────────────────
+print("\n4. eval/gold.json")
+g = RE.load_gold(RE.DEFAULT_GOLD)
+check("gold set loads and every label is valid", len(g) >= 30)
+check("every item has an id or ext text", all(("id" in i) or (i.get("ext") and i.get("title")) for i in g))
+check("no lead labelled twice", len([i["id"] for i in g if "id" in i]) == len({i["id"] for i in g if "id" in i}))
+
 print("\n" + ("ALL PASS" if not FAILURES else f"{len(FAILURES)} FAILURE(S)"))
 sys.exit(1 if FAILURES else 0)

@@ -1,0 +1,155 @@
+{
+ "version": 1,
+ "labelled_by": "Ohad Talraz",
+ "labelled_on": "2026-10-15",
+ "items": [
+  {
+   "id": 1026,
+   "label": "no"
+  },
+  {
+   "id": 1097,
+   "label": "yes"
+  },
+  {
+   "id": 1416,
+   "label": "yes"
+  },
+  {
+   "id": 1490,
+   "label": "yes"
+  },
+  {
+   "id": 1689,
+   "label": "no"
+  },
+  {
+   "id": 1998,
+   "label": "yes"
+  },
+  {
+   "id": 2027,
+   "label": "no"
+  },
+  {
+   "id": 2221,
+   "label": "yes"
+  },
+  {
+   "id": 2226,
+   "label": "no"
+  },
+  {
+   "id": 2246,
+   "label": "yes"
+  },
+  {
+   "id": 2286,
+   "label": "yes"
+  },
+  {
+   "id": 2352,
+   "label": "no"
+  },
+  {
+   "id": 2490,
+   "label": "yes"
+  },
+  {
+   "id": 2633,
+   "label": "yes"
+  },
+  {
+   "id": 2641,
+   "label": "no"
+  },
+  {
+   "id": 2694,
+   "label": "no"
+  },
+  {
+   "id": 2823,
+   "label": "yes"
+  },
+  {
+   "id": 2996,
+   "label": "yes"
+  },
+  {
+   "id": 3315,
+   "label": "yes"
+  },
+  {
+   "id": 3343,
+   "label": "no"
+  },
+  {
+   "id": 3398,
+   "label": "no"
+  },
+  {
+   "id": 3487,
+   "label": "no"
+  },
+  {
+   "id": 3740,
+   "label": "yes"
+  },
+  {
+   "id": 3770,
+   "label": "no"
+  },
+  {
+   "id": 3811,
+   "label": "yes"
+  },
+  {
+   "id": 3982,
+   "label": "yes"
+  },
+  {
+   "id": 4011,
+   "label": "no"
+  },
+  {
+   "id": 4065,
+   "label": "maybe"
+  },
+  {
+   "id": 4275,
+   "label": "yes"
+  },
+  {
+   "id": 4418,
+   "label": "no"
+  },
+  {
+   "id": 4463,
+   "label": "yes"
+  },
+  {
+   "id": 4655,
+   "label": "yes"
+  },
+  {
+   "id": 4662,
+   "label": "maybe"
+  },
+  {
+   "id": 4825,
+   "label": "yes"
+  },
+  {
+   "id": 936,
+   "label": "yes"
+  },
+  {
+   "ext": "amazon-sponsored-ads-gsp",
+   "title": "Amazon faces FTC suit claiming it misled advertisers on pricing (Sponsored Ads second-price auction)",
+   "content": "FTC sued Amazon alleging it misled advertisers about how Sponsored Products ads are priced: Amazon represented a second-price auction but charged above the second-highest bid. Israeli advertisers on Amazon were affected; a parallel Israeli class action has been filed.",
+   "source_type": "international",
+   "label": "yes",
+   "note": "קיים נתח שוק עבור מפרסמים ישראלים, ואף הגשתי ייצוגית בעצמי נגד אמזון בישראל | https://www.bloomberg.com/news/articles/2026-08-31/amazon-faces-ftc-suit-claiming-it-misled-advertisers-on-pricing"
+  }
+ ]
+}

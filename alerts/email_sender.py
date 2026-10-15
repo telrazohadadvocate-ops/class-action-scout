@@ -78,13 +78,11 @@ def _build_lead_row(lead: dict) -> str:
     </table>"""
 
 
-def send_alert_email(leads: list) -> bool:
+def send_email(subject: str, html: str) -> bool:
     """
-    Send an HTML digest email with high-priority leads via Microsoft Graph.
-
-    Reuses the shared delegated Outlook token (Mail.Send scope). Returns True on
-    success, False if auth is missing/expired or the send failed. Never raises —
-    a failure here must not crash the scan pipeline.
+    Send one HTML email via Microsoft Graph using the shared delegated Outlook
+    token (Mail.Send). Returns True on success. Never raises — a failure here
+    must not crash the scan pipeline.
     """
     client_id = os.getenv("OUTLOOK_CLIENT_ID", "")
     tenant_id = os.getenv("OUTLOOK_TENANT_ID", "common")
@@ -92,12 +90,10 @@ def send_alert_email(leads: list) -> bool:
     recipient = os.getenv("ALERT_RECIPIENT", "") or os.getenv("OUTLOOK_USER_EMAIL", "")
 
     if not client_id:
-        logger.warning("OUTLOOK_CLIENT_ID not set — skipping email alert")
+        logger.warning("OUTLOOK_CLIENT_ID not set — skipping email")
         return False
     if not recipient:
-        logger.warning(
-            "Neither ALERT_RECIPIENT nor OUTLOOK_USER_EMAIL set — skipping email alert"
-        )
+        logger.warning("Neither ALERT_RECIPIENT nor OUTLOOK_USER_EMAIL set — skipping email")
         return False
 
     # Silent refresh only — the interactive device-code flow lives in
@@ -111,24 +107,9 @@ def send_alert_email(leads: list) -> bool:
     if not token:
         logger.warning(
             "No cached Graph token (or refresh failed) — run scripts/setup_outlook.py "
-            "to authenticate with the Mail.Send scope. Skipping email alert."
+            "to authenticate with the Mail.Send scope. Skipping email."
         )
         return False
-
-    template = _TEMPLATE_PATH.read_text(encoding="utf-8")
-    lead_rows_html = "".join(_build_lead_row(l) for l in leads)
-    date_str = datetime.utcnow().strftime("%d/%m/%Y")
-    count = len(leads)
-
-    html = (
-        template
-        .replace("LEAD_ROWS_PLACEHOLDER", lead_rows_html)
-        .replace("DASHBOARD_URL_PLACEHOLDER", DASHBOARD_URL)
-        .replace("LEAD_COUNT_PLACEHOLDER", str(count))
-        .replace("DATE_PLACEHOLDER", date_str)
-    )
-
-    subject = f"\U0001f514 Scout — {count} ליד{'ים' if count != 1 else ''} חד{'שים' if count != 1 else 'ש'} בעדיפות גבוהה ({date_str})"
 
     payload = {
         "message": {
@@ -138,24 +119,41 @@ def send_alert_email(leads: list) -> bool:
         },
         "saveToSentItems": True,
     }
-
     try:
         import requests
         resp = requests.post(
             "https://graph.microsoft.com/v1.0/me/sendMail",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json=payload,
             timeout=30,
         )
         # Graph sendMail returns 202 Accepted with an empty body on success.
         if resp.status_code == 202:
-            logger.info(f"Alert email sent to {recipient} ({count} leads) via Graph")
+            logger.info(f"Email sent to {recipient}: {subject}")
             return True
         logger.error(f"Graph sendMail failed: {resp.status_code} {resp.text[:400]}")
         return False
     except Exception as e:
-        logger.error(f"Failed to send alert email via Graph: {e}")
+        logger.error(f"Failed to send email via Graph: {e}")
         return False
+
+
+def send_alert_email(leads: list) -> bool:
+    """HTML digest of high-priority leads. Returns True on success; never raises."""
+    try:
+        template = _TEMPLATE_PATH.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.error(f"Alert template unreadable: {e}")
+        return False
+    lead_rows_html = "".join(_build_lead_row(l) for l in leads)
+    date_str = datetime.utcnow().strftime("%d/%m/%Y")
+    count = len(leads)
+    html = (
+        template
+        .replace("LEAD_ROWS_PLACEHOLDER", lead_rows_html)
+        .replace("DASHBOARD_URL_PLACEHOLDER", DASHBOARD_URL)
+        .replace("LEAD_COUNT_PLACEHOLDER", str(count))
+        .replace("DATE_PLACEHOLDER", date_str)
+    )
+    subject = f"\U0001f514 Scout — {count} ליד{'ים' if count != 1 else ''} חד{'שים' if count != 1 else 'ש'} בעדיפות גבוהה ({date_str})"
+    return send_email(subject, html)

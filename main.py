@@ -11,6 +11,7 @@ Usage:
 """
 import os
 import re
+import sys
 import json
 import logging
 import argparse
@@ -115,11 +116,13 @@ class ClassActionScout:
         # Per-stage counts for this run — logged at the end even if the run
         # crashes, so "a stage received input and produced nothing" is visible.
         stats = {
-            "scrape": {"found": 0, "new": 0, "resumed": 0},
+            "scrape": {"found": 0, "new": 0, "resumed": 0, "sources": 0, "failed_sources": []},
             "stage1": {"classified": 0, "passed": 0, "below_gate": 0, "error": 0, "retried": 0},
             "dedup": {"in": 0, "unique": 0, "merged": 0, "review": 0},
             "stage2": {"in": 0, "ok": 0, "failed": 0},
             "stage3": {"in": 0, "ok": 0, "failed": 0},
+            "errors": [],      # sample error messages (for the health alert)
+            "crash": None,
         }
         self.last_run_stats = stats
 
@@ -132,6 +135,7 @@ class ClassActionScout:
                 if sources is None or k in sources
             }
 
+            stats["scrape"]["sources"] = len(active_scrapers)
             for name, scraper in active_scrapers.items():
                 log = ScrapeLog(source_name=name, started_at=datetime.now(timezone.utc))
                 try:
@@ -176,6 +180,7 @@ class ClassActionScout:
                 except Exception as e:
                     log.success = False
                     log.errors = str(e)
+                    stats["scrape"]["failed_sources"].append(name)
                     logger.error(f"[{name}] scrape failed: {e}")
                 finally:
                     log.completed_at = datetime.now(timezone.utc)
@@ -216,7 +221,7 @@ class ClassActionScout:
                 raw.lead = lead
                 self.db.add(lead)
                 run_leads.append(lead)
-                self._count_stage1(stats, decision)
+                self._count_stage1(stats, decision, lead)
                 self._log_stage1(f"raw#{raw.id}", lead, decision)
                 if decision == "pass":
                     leads_for_deep.append((lead, item, classification))
@@ -232,7 +237,7 @@ class ClassActionScout:
                 decision = self._apply_stage1(lead, classification)
                 run_leads.append(lead)
                 stats["stage1"]["retried"] += 1
-                self._count_stage1(stats, decision)
+                self._count_stage1(stats, decision, lead)
                 self._log_stage1(f"#{lead.id} (retry {lead.stage1_attempts}/{MAX_STAGE1_ATTEMPTS})", lead, decision)
                 if decision == "pass":
                     leads_for_deep.append((lead, item, classification))
@@ -277,6 +282,7 @@ class ClassActionScout:
                         # look like a real verdict and never be revisited.
                         stage2_failed += 1
                         stats["stage2"]["failed"] += 1
+                        self._note_error(stats, str(e))
                         logger.error(f"  ✗ #{lead.id} Stage 2 failed — left unscored: {e}")
                         continue
 
@@ -311,6 +317,7 @@ class ClassActionScout:
                     except Exception as e:
                         stage3_failed += 1
                         stats["stage3"]["failed"] += 1
+                        self._note_error(stats, str(e))
                         logger.warning(f"  value estimation error for lead {lead.id}: {e}")
                 if stage3_failed:
                     logger.warning(
@@ -440,12 +447,23 @@ class ClassActionScout:
                     logger.info(f"    Action: {lead.recommended_action}")
                     logger.info("")
 
+        except Exception as e:
+            stats["crash"] = f"{type(e).__name__}: {e}"
+            raise
+
         finally:
             self._log_stage_counts(stats)
             # 6. EMAIL ALERTS — in a finally block on purpose: a crash in PACER
             # enrichment, pinkas or the summary must not swallow the alert for
             # leads that already crossed the bar earlier in this run.
             self._send_run_alerts()
+            # 7. HEALTH ALERT + DAILY SUMMARY — so a broken stage is reported the
+            # same day instead of being discovered weeks later. Skipped on an
+            # interrupt/shutdown (KeyboardInterrupt, SystemExit): that is not a
+            # pipeline fault, and writing then would commit a half-finished run.
+            _exc = sys.exc_info()[1]
+            if _exc is None or isinstance(_exc, Exception):
+                self._send_health_and_digest(stats)
 
     # ── Re-analyze pending leads ────────────────────────
 
@@ -770,6 +788,79 @@ a {{ color: #2c5282; }}
         except Exception as e:
             logger.error(f"_send_run_alerts error: {e}")
 
+    # ── Health alert + daily summary ───────────────────
+
+    @staticmethod
+    def _note_error(stats: dict, msg) -> None:
+        if msg and len(stats.setdefault("errors", [])) < 20:
+            stats["errors"].append(str(msg)[:500])
+
+    def _alert_sent_since(self, status: str, since) -> bool:
+        from database.models import AlertLog
+        return self.db.query(AlertLog).filter(
+            AlertLog.status == status, AlertLog.sent_at >= since
+        ).first() is not None
+
+    def _collect_digest(self, now_utc) -> dict:
+        from sqlalchemy import func
+        since = (now_utc - timedelta(hours=24)).replace(tzinfo=None)
+        win = self.db.query(Lead).filter(Lead.scraped_at >= since)
+        top = (win.filter(Lead.priority_score.isnot(None),
+                          (Lead.is_duplicate_of_known.is_(None)) | (Lead.is_duplicate_of_known == False))
+               .order_by(Lead.priority_score.desc()).limit(5).all())
+        return {
+            "new": win.count(),
+            "classified": win.filter(Lead.relevance_score.isnot(None)).count(),
+            "passed": win.filter(Lead.relevance_score >= MIN_RELEVANCE_SCORE).count(),
+            "scored": win.filter(Lead.priority_score.isnot(None)).count(),
+            "hot": win.filter(Lead.priority_score >= HIGH_PRIORITY_THRESHOLD).count(),
+            "threshold": float(HIGH_PRIORITY_THRESHOLD),
+            "pending_retry": self.db.query(Lead).filter(
+                Lead.relevance_score.is_(None), Lead.stage1_error.isnot(None),
+                func.coalesce(Lead.stage1_attempts, 0) < MAX_STAGE1_ATTEMPTS).count(),
+            "top": [{"title": (l.title or "")[:110], "company": l.company or "",
+                     "score": round(l.priority_score, 1), "israel": l.israel_applicable}
+                    for l in top],
+        }
+
+    def _send_health_and_digest(self, stats: dict) -> None:
+        """
+        Never raises. Health alert: sent when the run has problems, unless the
+        same set of problems was already reported in the last few hours.
+        Daily summary: once per local day, healthy or not.
+        """
+        from alerts import health
+        from alerts import email_sender
+        from database.models import AlertLog
+        try:
+            now = datetime.now(timezone.utc)
+            now_naive = now.replace(tzinfo=None)
+            issues = health.evaluate_run(stats)
+            for i in issues:
+                logger.warning(f"  ⚠ HEALTH: {i['text']}")
+
+            if issues:
+                sig = health.issue_signature(issues)[:50]
+                if self._alert_sent_since(sig, now_naive - timedelta(hours=health.HEALTH_REPEAT_HOURS)):
+                    logger.info("Health alert: same problems already reported recently — not re-sent")
+                else:
+                    subject, body = health.build_health_email(issues, stats, now)
+                    ok = email_sender.send_email(subject, body)
+                    self.db.add(AlertLog(lead_count=len(issues), status=sig if ok else "health_error"))
+                    commit_with_retry(self.db)
+
+            if os.getenv("DAILY_DIGEST_ENABLED", "true").lower() not in ("0", "false", "no"):
+                day_start_local = now.astimezone(health.LOCAL_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+                day_start = day_start_local.astimezone(timezone.utc).replace(tzinfo=None)
+                if not self._alert_sent_since("digest", day_start):
+                    d = self._collect_digest(now)
+                    subject, body = health.build_digest_email(d, issues, now)
+                    ok = email_sender.send_email(subject, body)
+                    self.db.add(AlertLog(lead_count=d["hot"], status="digest" if ok else "digest_error"))
+                    commit_with_retry(self.db)
+        except Exception as e:
+            logger.error(f"_send_health_and_digest error: {e}")
+
     # ── Stage-1 helpers ────────────────────────────────
 
     def _raw_needs_stage1(self, raw: RawSource) -> bool:
@@ -830,8 +921,10 @@ a {{ color: #2c5282; }}
         return "pass" if lead.relevance_score >= MIN_RELEVANCE_SCORE else "below_gate"
 
     @staticmethod
-    def _count_stage1(stats: dict, decision: str) -> None:
+    def _count_stage1(stats: dict, decision: str, lead=None) -> None:
         stats["stage1"]["classified"] += 1
+        if decision == "error" and lead is not None:
+            ClassActionScout._note_error(stats, lead.stage1_error)
         key = {"pass": "passed", "below_gate": "below_gate", "error": "error"}[decision]
         stats["stage1"][key] += 1
 

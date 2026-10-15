@@ -85,6 +85,7 @@ expected = 4000 * 3e-6 + 500 * 15e-6 + 2 * 0.01
 check("cost recorded and spend reported", abs(d["spent"] - round(expected, 2)) < 0.01 and d["budget"] == settings.ASK_MONTHLY_BUDGET_USD)
 call = CLIENT[0].calls[0]
 check("web search tool offered", call["tools"][0]["type"].startswith("web_search"))
+check("no user_location (the API rejects country IL)", "user_location" not in call["tools"][0])
 check("system prompt carries the lead, a related article and the firm's cases",
       "Amazon Sponsored Ads overcharge" in call["system"] and "Bloomberg" in call["system"] and "Buy Box" in call["system"])
 
@@ -116,6 +117,10 @@ CLIENT[0] = FakeClient([RuntimeError("Error code: 400 - Your credit balance is t
 c.post(f"/api/leads/{LID}/ask", json={"question": "x"})
 last = c.get(f"/api/leads/{LID}/chat").get_json()["messages"][-1]
 check("API failure → readable error naming the credit", last["status"] == "error" and "קרדיט" in last["content"])
+CLIENT[0] = FakeClient([RuntimeError("Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'tools.0: something is not supported.'}}")])
+c.post(f"/api/leads/{LID}/ask", json={"question": "y"})
+last = c.get(f"/api/leads/{LID}/chat").get_json()["messages"][-1]
+check("other API errors show the API's own message", last["status"] == "error" and "something is not supported" in last["content"])
 db3 = webapp.get_db(); db3.add(LeadChat(lead_id=LID, role="assistant", status="done", content="x", cost_usd=999)); db3.commit()
 r = c.post(f"/api/leads/{LID}/ask", json={"question": "x"})
 check("over the monthly budget → 429 with a message", r.status_code == 429 and "תקרה" in r.get_json()["message"])

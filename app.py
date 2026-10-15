@@ -304,8 +304,13 @@ def _answer_job(lead_id, pending_id, user_id, question):
     except Exception as e:
         app.logger.error(f"Ask Scout failed for lead {lead_id}: {e}")
         msg = str(e)
-        hint = "נגמר הקרדיט ב-API" if "credit balance" in msg else "תקלה זמנית"
-        row.content, row.status = f"לא הצלחתי לענות ({hint}). נסה שוב בעוד רגע.", "error"
+        if "credit balance" in msg:
+            text = "לא הצלחתי לענות: נגמר הקרדיט ב-API."
+        else:
+            import re as _re
+            m = _re.search(r"'message': '([^']{1,200})'", msg)
+            text = "לא הצלחתי לענות. נסה שוב בעוד רגע." + (f" (פרטים: {m.group(1)})" if m else "")
+        row.content, row.status = text, "error"
     commit_with_retry(db)
 
 

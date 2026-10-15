@@ -12,8 +12,9 @@ from analysis.claude_analyzer import _load_prompt
 
 logger = logging.getLogger("scout")
 
-WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 4,
-                   "user_location": {"type": "approximate", "country": "IL", "timezone": "Asia/Jerusalem"}}
+# No user_location: the API rejects country "IL" ("Country code IL is not
+# supported"). Israeli results come from searching in Hebrew (see the prompt).
+WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 4}
 MAX_TOKENS_ASK = 2500
 MAX_CONTINUATIONS = 3                 # a long server-tool turn can come back as pause_turn
 
